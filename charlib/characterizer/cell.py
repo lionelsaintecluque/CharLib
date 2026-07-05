@@ -180,6 +180,13 @@ class Cell:
                 pin_group = liberty.Group('pin', pin.name)
                 pin_group.add_attribute('direction', pin.direction)
                 if pin.direction is Port.Direction.OUT:
+                    # Bound the NLDM tables: without max_capacitance, STA tools
+                    # extrapolate beyond the largest characterized load (wildly,
+                    # for loads far outside the grid) and resizers see no max-cap
+                    # violation to repair on overloaded nets.
+                    loads = cell_config.get('loads')
+                    if loads:
+                        pin_group.add_attribute('max_capacitance', max(loads))
                     pin_group.add_attribute('function', str(self.functions[pin.name]))
                 elif pin.role == Port.Role.CLOCK:
                     pin_group.add_attribute('clock', "true")
