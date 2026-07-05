@@ -180,7 +180,18 @@ class Cell:
                 pin_group = liberty.Group('pin', pin.name)
                 pin_group.add_attribute('direction', pin.direction)
                 if pin.direction is Port.Direction.OUT:
-                    pin_group.add_attribute('function', str(self.functions[pin.name]))
+                    # Bound the NLDM tables: without max_capacitance, STA tools
+                    # extrapolate beyond the largest characterized load (wildly,
+                    # for loads far outside the grid) and resizers see no max-cap
+                    # violation to repair on overloaded nets.
+                    loads = cell_config.get('loads')
+                    if loads:
+                        pin_group.add_attribute('max_capacitance', max(loads))
+                    # The Liberty 'function' attribute is a boolean expression;
+                    # str(Function) renders 'OUT = expr', which OpenSTA rejects
+                    # ('function syntax error'). Use the bare expression, as the
+                    # ff/latch groups above already do.
+                    pin_group.add_attribute('function', self.functions[pin.name].expression)
                 elif pin.role == Port.Role.CLOCK:
                     pin_group.add_attribute('clock', "true")
             self.liberty.add_group(pin_group)
