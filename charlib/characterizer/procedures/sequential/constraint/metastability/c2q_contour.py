@@ -97,6 +97,8 @@ def find_setup_hold_for_path(cell, config, settings, variation, path, state_maps
     path_str = f'{data_pin}_{data_transition}__{output_pin}_{output_transition}'
 
     result_per_state = {}
+    worst_c2q = float('nan')
+    worst_c2q_trans = float('nan')
 
     # there could be multiple state maps for a given path
     # ex. in a scan dff with pins D, Q, CLK, SE (scan enable) and SD (scan data)
@@ -126,7 +128,15 @@ def find_setup_hold_for_path(cell, config, settings, variation, path, state_maps
         # Used to gate binary search steps 1–4: points with c2q > ref * 1.2 are treated
         # as invalid (metastable / degenerate operating region).
         step0_path = (state_debug_path / 'step0') if settings.debug else None
-        ref_c2q_steps = step_c2q(t_stabilizing, t_stabilizing, step0_path)
+        ref_c2q_steps, ref_trans_steps = get_c2q(cell, config, settings, path, state_map,
+                                                 clock_slew_rate=cs, data_slew_rate=ds,
+                                                 setup_skew=t_stabilizing, hold_skew=t_stabilizing,
+                                                 stabilizing_time=t_stabilizing,
+                                                 capacitive_load=C_LOAD, debug_dir=step0_path,
+                                                 return_transition=True)
+        if not math.isnan(ref_c2q_steps) and (math.isnan(worst_c2q) or ref_c2q_steps > worst_c2q):
+            worst_c2q = ref_c2q_steps
+            worst_c2q_trans = ref_trans_steps
         step_threshold = ref_c2q_steps * 1.2 if not math.isnan(ref_c2q_steps) else math.inf
         ref_c2q_display = to_t(ref_c2q_steps @ PySpice.Unit.u_s) if not math.isnan(ref_c2q_steps) else float('nan')
         threshold_display = to_t(step_threshold @ PySpice.Unit.u_s) if not math.isinf(step_threshold) else float('inf')
@@ -324,7 +334,54 @@ def find_setup_hold_for_path(cell, config, settings, variation, path, state_maps
     hold_lut.values[0, 0] = worst_hold.convert(settings.units.time.prefixed_unit).value
     htg.add_group(hold_lut)
 
+    # Reference clock-to-output propagation delay, measured for free at the relaxed
+    # point (step 0). Emitted from a single representative data slew: the value does
+    # not depend on the data slew there, and sibling variations would otherwise
+    # collide on the same (clock_slew) LUT key.
+    if variation['data_slews'] == max(config.parameters['data_slews']) and not math.isnan(worst_c2q):
+        add_c2q_arc(result, clock_pin, output_pin, output_transition, n_cs=n_cs,
+                    clock_slew=cs.convert(settings.units.time.prefixed_unit).value,
+                    load=C_LOAD.convert(settings.units.capacitance.prefixed_unit).value,
+                    delay=to_t(worst_c2q @ PySpice.Unit.u_s),
+                    transition=to_t(worst_c2q_trans @ PySpice.Unit.u_s)
+                               if not math.isnan(worst_c2q_trans) else float('nan'))
+
     return result
+
+
+def add_c2q_arc(result, clock_pin, output_pin, output_transition, n_cs,
+                clock_slew, load, delay, transition):
+    """Emit the reference clock-to-output propagation delay as a Liberty timing arc.
+
+    Called once per (variation, path) at the representative data slew. Sibling
+    variations contribute 1x1 LUTs that merge on clock_slew through the standard
+    LookupTable.merge mechanism (same pattern as the setup/hold tables).
+    Limitation of this first pass: single fixed load (the metastability constraint
+    load), so the table is indexed on clock slew only.
+    """
+    pin_group = result.group('pin', output_pin)
+    pin_group.add_group('timing', '/* c2q */')
+    tg = pin_group.group('timing', '/* c2q */')
+    tg.add_attribute('related_pin', clock_pin.name)
+    tg.add_attribute('timing_type', 'falling_edge' if clock_pin.is_inverted() else 'rising_edge')
+
+    template = f'c2q_template_{n_cs}x1'
+    delay_name = 'cell_rise' if output_transition == '01' else 'cell_fall'
+    trans_name = 'rise_transition' if output_transition == '01' else 'fall_transition'
+
+    delay_lut = LookupTable(delay_name, template,
+                            input_net_transition=[clock_slew],
+                            total_output_net_capacitance=[load])
+    delay_lut.values[0, 0] = delay
+    tg.add_group(delay_lut)
+
+    if not math.isnan(transition):
+        trans_lut = LookupTable(trans_name, template,
+                                input_net_transition=[clock_slew],
+                                total_output_net_capacitance=[load])
+        trans_lut.values[0, 0] = transition
+        tg.add_group(trans_lut)
+    return tg
 
 
 def sweep_2d_space_for_contour(probe_fn, setup_min, setup_max, hold_min, hold_max, c2q_threshold=math.inf, n_samples=40):
@@ -574,9 +631,12 @@ def get_t_stabilizing(cell, config, settings, path, state_map, k=2, th_low=0.03,
     return (k*transient_time @ PySpice.Unit.u_s).convert(settings.units.time.prefixed_unit)
 
 
-def get_c2q(cell, config, settings, path, state_map, debug_dir=None, **sim_kwargs):
+def get_c2q(cell, config, settings, path, state_map, debug_dir=None, return_transition=False, **sim_kwargs):
     """Build a SPICE testbench and run a transient simulation to get the clock-to-q delay
-    for a given setup skew / hold skew, load capacitance, and stabilizing time."""
+    for a given setup skew / hold skew, load capacitance, and stabilizing time.
+
+    With return_transition=True, returns a (c2q, output_transition_time) tuple instead
+    of the bare c2q float; the transition is measured on the same latching edge."""
 
     # Build latch simulation
     try:
@@ -585,7 +645,7 @@ def get_c2q(cell, config, settings, path, state_map, debug_dir=None, **sim_kwarg
                                           **sim_kwargs)
     except ValueError:
         # If t_setup + t_hold < 0 fail immediately
-        return float('nan')
+        return (float('nan'), float('nan')) if return_transition else float('nan')
 
     # Run simulation
     try:
@@ -617,7 +677,7 @@ def get_c2q(cell, config, settings, path, state_map, debug_dir=None, **sim_kwarg
                     np.where(np.diff(np.sign(vclk - v_clk_active)) < 0)[0]
     if len(clk_crossings) < 2:
         # TODO: Log why the procedure failed (not enough clock edges; error in clk wave gen)
-        return float('nan')
+        return (float('nan'), float('nan')) if return_transition else float('nan')
     t_clk_edge = np.interp(v_clk_active, [vclk[clk_crossings[-1]], vclk[clk_crossings[-1] + 1]],
                                          [time[clk_crossings[-1]], time[clk_crossings[-1] + 1]])
 
@@ -628,8 +688,26 @@ def get_c2q(cell, config, settings, path, state_map, debug_dir=None, **sim_kwarg
                   np.where(np.diff(np.sign(vout - v_q_active)) < 0)[0]
     if len(q_crossings) < 1:
         # TODO: Log why the procedure failed (Q never latches; overconstrained setup/hold window)
-        return float('nan')
+        return (float('nan'), float('nan')) if return_transition else float('nan')
     t_q_edge = np.interp(v_q_active, [vout[q_crossings[-1]], vout[q_crossings[-1] + 1]],
                                      [time[q_crossings[-1]], time[q_crossings[-1] + 1]])
 
-    return t_q_edge - t_clk_edge
+    c2q = t_q_edge - t_clk_edge
+    if not return_transition:
+        return c2q
+
+    # Output transition time between the low and high slew thresholds, measured on
+    # the same latching edge (same last-crossing idiom as the delay measurement above).
+    v_start = vdd * (th_low if output_is_rising else th_high)
+    v_end = vdd * (th_high if output_is_rising else th_low)
+    start_cross = np.where(np.diff(np.sign(vout - v_start)) > 0)[0] if output_is_rising else \
+                  np.where(np.diff(np.sign(vout - v_start)) < 0)[0]
+    end_cross = np.where(np.diff(np.sign(vout - v_end)) > 0)[0] if output_is_rising else \
+                np.where(np.diff(np.sign(vout - v_end)) < 0)[0]
+    if len(start_cross) < 1 or len(end_cross) < 1:
+        return c2q, float('nan')
+    t_start = np.interp(v_start, [vout[start_cross[-1]], vout[start_cross[-1] + 1]],
+                                 [time[start_cross[-1]], time[start_cross[-1] + 1]])
+    t_end = np.interp(v_end, [vout[end_cross[-1]], vout[end_cross[-1] + 1]],
+                             [time[end_cross[-1]], time[end_cross[-1] + 1]])
+    return c2q, t_end - t_start
