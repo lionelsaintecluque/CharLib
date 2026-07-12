@@ -574,9 +574,12 @@ def get_t_stabilizing(cell, config, settings, path, state_map, k=2, th_low=0.03,
     return (k*transient_time @ PySpice.Unit.u_s).convert(settings.units.time.prefixed_unit)
 
 
-def get_c2q(cell, config, settings, path, state_map, debug_dir=None, **sim_kwargs):
+def get_c2q(cell, config, settings, path, state_map, debug_dir=None, return_transition=False, **sim_kwargs):
     """Build a SPICE testbench and run a transient simulation to get the clock-to-q delay
-    for a given setup skew / hold skew, load capacitance, and stabilizing time."""
+    for a given setup skew / hold skew, load capacitance, and stabilizing time.
+
+    With return_transition=True, returns a (c2q, output_transition_time) tuple instead
+    of the bare c2q float; the transition is measured on the same latching edge."""
 
     # Build latch simulation
     try:
@@ -585,7 +588,7 @@ def get_c2q(cell, config, settings, path, state_map, debug_dir=None, **sim_kwarg
                                           **sim_kwargs)
     except ValueError:
         # If t_setup + t_hold < 0 fail immediately
-        return float('nan')
+        return (float('nan'), float('nan')) if return_transition else float('nan')
 
     # Run simulation
     try:
@@ -617,7 +620,7 @@ def get_c2q(cell, config, settings, path, state_map, debug_dir=None, **sim_kwarg
                     np.where(np.diff(np.sign(vclk - v_clk_active)) < 0)[0]
     if len(clk_crossings) < 2:
         # TODO: Log why the procedure failed (not enough clock edges; error in clk wave gen)
-        return float('nan')
+        return (float('nan'), float('nan')) if return_transition else float('nan')
     t_clk_edge = np.interp(v_clk_active, [vclk[clk_crossings[-1]], vclk[clk_crossings[-1] + 1]],
                                          [time[clk_crossings[-1]], time[clk_crossings[-1] + 1]])
 
@@ -628,8 +631,26 @@ def get_c2q(cell, config, settings, path, state_map, debug_dir=None, **sim_kwarg
                   np.where(np.diff(np.sign(vout - v_q_active)) < 0)[0]
     if len(q_crossings) < 1:
         # TODO: Log why the procedure failed (Q never latches; overconstrained setup/hold window)
-        return float('nan')
+        return (float('nan'), float('nan')) if return_transition else float('nan')
     t_q_edge = np.interp(v_q_active, [vout[q_crossings[-1]], vout[q_crossings[-1] + 1]],
                                      [time[q_crossings[-1]], time[q_crossings[-1] + 1]])
 
-    return t_q_edge - t_clk_edge
+    c2q = t_q_edge - t_clk_edge
+    if not return_transition:
+        return c2q
+
+    # Output transition time between the low and high slew thresholds, measured on
+    # the same latching edge (same last-crossing idiom as the delay measurement above).
+    v_start = vdd * (th_low if output_is_rising else th_high)
+    v_end = vdd * (th_high if output_is_rising else th_low)
+    start_cross = np.where(np.diff(np.sign(vout - v_start)) > 0)[0] if output_is_rising else \
+                  np.where(np.diff(np.sign(vout - v_start)) < 0)[0]
+    end_cross = np.where(np.diff(np.sign(vout - v_end)) > 0)[0] if output_is_rising else \
+                np.where(np.diff(np.sign(vout - v_end)) < 0)[0]
+    if len(start_cross) < 1 or len(end_cross) < 1:
+        return c2q, float('nan')
+    t_start = np.interp(v_start, [vout[start_cross[-1]], vout[start_cross[-1] + 1]],
+                                 [time[start_cross[-1]], time[start_cross[-1] + 1]])
+    t_end = np.interp(v_end, [vout[end_cross[-1]], vout[end_cross[-1] + 1]],
+                             [time[end_cross[-1]], time[end_cross[-1] + 1]])
+    return c2q, t_end - t_start
