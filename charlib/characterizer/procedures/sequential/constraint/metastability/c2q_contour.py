@@ -97,6 +97,8 @@ def find_setup_hold_for_path(cell, config, settings, variation, path, state_maps
     path_str = f'{data_pin}_{data_transition}__{output_pin}_{output_transition}'
 
     result_per_state = {}
+    worst_c2q = float('nan')
+    worst_c2q_trans = float('nan')
 
     # there could be multiple state maps for a given path
     # ex. in a scan dff with pins D, Q, CLK, SE (scan enable) and SD (scan data)
@@ -126,7 +128,15 @@ def find_setup_hold_for_path(cell, config, settings, variation, path, state_maps
         # Used to gate binary search steps 1–4: points with c2q > ref * 1.2 are treated
         # as invalid (metastable / degenerate operating region).
         step0_path = (state_debug_path / 'step0') if settings.debug else None
-        ref_c2q_steps = step_c2q(t_stabilizing, t_stabilizing, step0_path)
+        ref_c2q_steps, ref_trans_steps = get_c2q(cell, config, settings, path, state_map,
+                                                 clock_slew_rate=cs, data_slew_rate=ds,
+                                                 setup_skew=t_stabilizing, hold_skew=t_stabilizing,
+                                                 stabilizing_time=t_stabilizing,
+                                                 capacitive_load=C_LOAD, debug_dir=step0_path,
+                                                 return_transition=True)
+        if not math.isnan(ref_c2q_steps) and (math.isnan(worst_c2q) or ref_c2q_steps > worst_c2q):
+            worst_c2q = ref_c2q_steps
+            worst_c2q_trans = ref_trans_steps
         step_threshold = ref_c2q_steps * 1.2 if not math.isnan(ref_c2q_steps) else math.inf
         ref_c2q_display = to_t(ref_c2q_steps @ PySpice.Unit.u_s) if not math.isnan(ref_c2q_steps) else float('nan')
         threshold_display = to_t(step_threshold @ PySpice.Unit.u_s) if not math.isinf(step_threshold) else float('inf')
@@ -323,6 +333,18 @@ def find_setup_hold_for_path(cell, config, settings, variation, path, state_maps
                            constraint_pin_transition=[ds.convert(settings.units.time.prefixed_unit).value])
     hold_lut.values[0, 0] = worst_hold.convert(settings.units.time.prefixed_unit).value
     htg.add_group(hold_lut)
+
+    # Reference clock-to-output propagation delay, measured for free at the relaxed
+    # point (step 0). Emitted from a single representative data slew: the value does
+    # not depend on the data slew there, and sibling variations would otherwise
+    # collide on the same (clock_slew) LUT key.
+    if variation['data_slews'] == max(config.parameters['data_slews']) and not math.isnan(worst_c2q):
+        add_c2q_arc(result, clock_pin, output_pin, output_transition, n_cs=n_cs,
+                    clock_slew=cs.convert(settings.units.time.prefixed_unit).value,
+                    load=C_LOAD.convert(settings.units.capacitance.prefixed_unit).value,
+                    delay=to_t(worst_c2q @ PySpice.Unit.u_s),
+                    transition=to_t(worst_c2q_trans @ PySpice.Unit.u_s)
+                               if not math.isnan(worst_c2q_trans) else float('nan'))
 
     return result
 
