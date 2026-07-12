@@ -327,6 +327,41 @@ def find_setup_hold_for_path(cell, config, settings, variation, path, state_maps
     return result
 
 
+def add_c2q_arc(result, clock_pin, output_pin, output_transition, n_cs,
+                clock_slew, load, delay, transition):
+    """Emit the reference clock-to-output propagation delay as a Liberty timing arc.
+
+    Called once per (variation, path) at the representative data slew. Sibling
+    variations contribute 1x1 LUTs that merge on clock_slew through the standard
+    LookupTable.merge mechanism (same pattern as the setup/hold tables).
+    Limitation of this first pass: single fixed load (the metastability constraint
+    load), so the table is indexed on clock slew only.
+    """
+    pin_group = result.group('pin', output_pin)
+    pin_group.add_group('timing', '/* c2q */')
+    tg = pin_group.group('timing', '/* c2q */')
+    tg.add_attribute('related_pin', clock_pin.name)
+    tg.add_attribute('timing_type', 'falling_edge' if clock_pin.is_inverted() else 'rising_edge')
+
+    template = f'c2q_template_{n_cs}x1'
+    delay_name = 'cell_rise' if output_transition == '01' else 'cell_fall'
+    trans_name = 'rise_transition' if output_transition == '01' else 'fall_transition'
+
+    delay_lut = LookupTable(delay_name, template,
+                            input_net_transition=[clock_slew],
+                            total_output_net_capacitance=[load])
+    delay_lut.values[0, 0] = delay
+    tg.add_group(delay_lut)
+
+    if not math.isnan(transition):
+        trans_lut = LookupTable(trans_name, template,
+                                input_net_transition=[clock_slew],
+                                total_output_net_capacitance=[load])
+        trans_lut.values[0, 0] = transition
+        tg.add_group(trans_lut)
+    return tg
+
+
 def sweep_2d_space_for_contour(probe_fn, setup_min, setup_max, hold_min, hold_max, c2q_threshold=math.inf, n_samples=40):
     """Sweep every (setup, hold) combination inside the characterization boundary
     and record whether the flip-flop latches at each point.
