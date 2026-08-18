@@ -1,8 +1,22 @@
+"""Combinational delay measurement.
+
+One simulation task per path through the cell. Each task drives a single
+interactive ngspice session through the whole (conditions x data_slews x
+loads) measurement matrix: the test circuit is parsed once, then every
+point is reached with `alter` (input waveforms, load capacitance) followed
+by `tran` + `meas` — never by reloading the circuit or respawning the
+simulator. Simulation windows follow a two-pass discipline: the first
+point of a session runs with the generous upstream window, later points
+derive their window from the longest value measured so far and grow it on
+measurement failure.
+"""
+
+import re
+
 import PySpice
-import matplotlib.pyplot as plt
 from numpy import average
 
-from charlib.characterizer import utils, plots
+from charlib.characterizer import utils
 from charlib.characterizer.cell import Port
 from charlib.characterizer.procedures import register, ProcedureFailedException
 from charlib.liberty import liberty
@@ -11,111 +25,123 @@ from charlib.liberty.library import LookupTable
 @register('data_slews', 'loads', 'transient_sim_end_time')
 def combinational_worst_case(cell, config, settings):
     """Measure worst-case combinational transient and propagation delays"""
-    for variation in config.variations('data_slews', 'loads', 'transient_sim_end_time'):
-        for path in cell.paths():
-            yield (measure_delays_for_path_with_criterion, cell, config, settings, variation, path, max)
+    for path in cell.paths():
+        yield (measure_delay_matrix_for_path, cell, config, settings, path, max)
 
 @register('data_slews', 'loads', 'transient_sim_end_time')
 def combinational_average(cell, config, settings):
     """Measure combinational transient and propagation delays using a uniform average"""
-    for variation in config.variations('data_slews', 'loads', 'transient_sim_end_time'):
-        for path in cell.paths():
-            yield (measure_delays_for_path_with_criterion, cell, config, settings, variation, path, average)
+    for path in cell.paths():
+        yield (measure_delay_matrix_for_path, cell, config, settings, path, average)
 
-def measure_delays_for_path_with_criterion(cell, config, settings, variation, path, criterion=max):
-    """Given a particular path through the cell, find delays according to a selection criterion.
 
-    This method tests all nonmasking conditions for the path through the cell from target_input to
-    target_output with the given slew rate and capacitive load, then assigns the delay selected
-    using the passed criterion function. Returns a liberty cell group with the delay information.
+def _fmt(value):
+    """Render a quantity as a plain SI float for an interactive ngspice command."""
+    return f'{float(value):.12e}'
 
-    The default criterion selects the worst-case (i.e. maximum) delay. This is in theory an overly
-    pessimistic method of delay estimation. A more accurate method would be to perform a weighted
-    average of each delay based on the likelihood of the corresponding state transition. However,
-    at the time of writing this function, CharLib has no mechanism for accepting prior transition
-    likelihood information.
+def _pwl_alter(source, points):
+    """Build the command altering a PWL source to the given (time, voltage) vertices."""
+    flat = ' '.join(f'{_fmt(t)} {_fmt(v)}' for (t, v) in points)
+    return f'alter @{source}[pwl] = [ {flat} ]'
+
+def _condition_measurements(pin_map, thresholds, vdd):
+    """Return (name, meas command) pairs for one nonmasking condition.
+
+    Names and thresholds are identical to what this procedure has always
+    measured; only the transport changed (interactive `meas` instead of a
+    .meas card).
+    """
+    measurements = []
+    for out_pin in pin_map.target_outputs:
+        for in_pin in pin_map.target_inputs:
+            if pin_map.target_inputs[in_pin] == '01':
+                in_direction = 'rise'
+                threshold_prop_0 = thresholds.rising
+            else:
+                in_direction = 'fall'
+                threshold_prop_0 = thresholds.falling
+            if pin_map.target_outputs[out_pin] == '01':
+                out_direction = 'rise'
+                threshold_prop_1 = thresholds.rising
+                threshold_tran_0 = thresholds.low
+                threshold_tran_1 = thresholds.high
+            else:
+                out_direction = 'fall'
+                threshold_prop_1 = thresholds.falling
+                threshold_tran_0 = thresholds.high
+                threshold_tran_1 = thresholds.low
+            prop_name = f'cell_{out_direction}__{in_pin}_to_{out_pin}'.lower()
+            measurements.append((prop_name,
+                f'meas tran {prop_name} '
+                f'trig v(v{in_pin}) val={float(vdd*threshold_prop_0)} {in_direction}=1 '
+                f'targ v(v{out_pin}) val={float(vdd*threshold_prop_1)} {out_direction}=1'))
+            tran_name = f'{out_direction}_transition__{in_pin}_to_{out_pin}'.lower()
+            measurements.append((tran_name,
+                f'meas tran {tran_name} '
+                f'trig v(v{out_pin}) val={float(vdd*threshold_tran_0)} {out_direction}=1 '
+                f'targ v(v{out_pin}) val={float(vdd*threshold_tran_1)} {out_direction}=1'))
+    return measurements
+
+def measure_delay_matrix_for_path(cell, config, settings, path, criterion=max):
+    """Measure the full delay matrix for one path through the cell, in one session.
+
+    This method tests all nonmasking conditions for the path through the cell
+    from target_input to target_output over every (data_slew, load) point,
+    then assigns each point the delay selected using the passed criterion
+    function. Returns a liberty cell group with full lookup tables.
+
+    The default criterion selects the worst-case (i.e. maximum) delay across
+    conditions. See combinational_worst_case for caveats.
 
     :param cell: A Cell object to test.
     :param config: A CellTestConfig object containing cell-specific test configuration details.
     :param settings: A CharacterizationSettings object containing library-wide configuration
                      details.
-    :param variation: A dict containing test parameters for this configuration variation, such
-                      as slew rates and loads.
     :param path: A list in the format [input_pin, input_transition, output_pin,
                  output_transtition] describing the path under test in the cell.
     :param criterion: A function which returns a single value given a list of numeric values.
                       Default max.
     """
-    # Set up key parameters
     [input_pin, _, output_pin, output_transition] = path
-    data_slew = variation['data_slews'] * settings.units.time
-    load = variation['loads'] * settings.units.capacitance
-    t_sim_end = max(variation['transient_sim_end_time'] * settings.units.time, 1000*data_slew)
+    conditions = list(cell.nonmasking_conditions_for_path(*path))
+
+    slews = config.parameters['data_slews']
+    loads = config.parameters['loads']
     vdd = settings.primary_power.voltage * settings.units.voltage
     vss = settings.primary_ground.voltage * settings.units.voltage
+    low = settings.logic_thresholds.low
+    high = settings.logic_thresholds.high
+    t_end_config = config.parameters.get('transient_sim_end_time', 0) * settings.units.time
 
-    # Measure delays for all nonmasking conditions
-    analyses = {}
-    measurement_names = set()
-    for state_map in cell.nonmasking_conditions_for_path(*path):
-        # Build the test circuit
+    # name -> {(load, slew): [one measured value per condition, in seconds]}
+    samples = {}
+
+    if conditions and not settings.dry_run:
+        pin_maps = [utils.PinStateMap(cell.inputs, cell.outputs, state_map)
+                    for state_map in conditions]
+        # An output loaded in any condition keeps its capacitor for the whole
+        # session; outputs never measured stay floating as before.
+        capped_outputs = {name for pin_map in pin_maps for name in pin_map.target_outputs}
+
+        # Build the one test circuit for this path. Every logic input gets its
+        # own PWL source so conditions and slews are switched by `alter`.
         circuit = utils.init_circuit('comb_delay', cell.netlist, config.models,
                                      settings.named_nodes, settings.units)
-
-        # Initialize device under test and wire up pins
-        pin_map = utils.PinStateMap(cell.inputs, cell.outputs, state_map)
         connections = []
-        measurements = []
         for pin in cell.pins_in_netlist_order():
             match pin.role:
-                case Port.Role.LOGIC: # Digital logic inputs or outputs
-                    if pin.name in pin_map.target_inputs:
+                case Port.Role.LOGIC:
+                    if pin.name in cell.inputs:
                         connections.append(f'v{pin.name}')
-                        (v_0, v_1) = (vss, vdd) if pin_map.target_inputs[pin.name] == '01' else (vdd, vss)
                         circuit.PieceWiseLinearVoltageSource(
-                            pin.name,
-                            f'v{pin.name}', circuit.gnd,
-                            values=utils.slew_pwl(v_0, v_1, data_slew, 3*data_slew,
-                                                  settings.logic_thresholds.low,
-                                                  settings.logic_thresholds.high))
-                    elif pin.name in pin_map.target_outputs:
+                            pin.name, f'v{pin.name}', circuit.gnd,
+                            values=utils.slew_pwl(vss, vss, slews[0]*settings.units.time,
+                                                  3*slews[0]*settings.units.time, low, high))
+                    elif pin.name in capped_outputs:
                         connections.append(f'v{pin.name}')
-                        circuit.C(pin.name, f'v{pin.name}', circuit.gnd, load)
-                        for in_pin in pin_map.target_inputs:
-                            if pin_map.target_inputs[in_pin] == '01':
-                                in_direction = 'rise'
-                                threshold_prop_0 = settings.logic_thresholds.rising
-                            else:
-                                in_direction = 'fall'
-                                threshold_prop_0 = settings.logic_thresholds.falling
-                            if pin_map.target_outputs[pin.name] == '01':
-                                out_direction = 'rise'
-                                threshold_prop_1 = settings.logic_thresholds.rising
-                                threshold_tran_0 = settings.logic_thresholds.low
-                                threshold_tran_1 = settings.logic_thresholds.high
-                            else:
-                                out_direction = 'fall'
-                                threshold_prop_1 = settings.logic_thresholds.falling
-                                threshold_tran_0 = settings.logic_thresholds.high
-                                threshold_tran_1 = settings.logic_thresholds.low
-                            prop_name = f'cell_{out_direction}__{in_pin}_to_{pin.name}'.lower()
-                            measurement_names.add(prop_name)
-                            measurements.append((
-                                'tran', prop_name,
-                                f'trig v(v{in_pin}) val={float(vdd*threshold_prop_0)} {in_direction}=1',
-                                f'targ v(v{pin.name}) val={float(vdd*threshold_prop_1)} {out_direction}=1'))
-                            tran_name = f'{out_direction}_transition__{in_pin}_to_{pin.name}'.lower()
-                            measurement_names.add(tran_name)
-                            measurements.append((
-                                'tran', tran_name,
-                                f'trig v(v{pin.name}) val={float(vdd*threshold_tran_0)} {out_direction}=1',
-                                f'targ v(v{pin.name}) val={float(vdd*threshold_tran_1)} {out_direction}=1'))
-                    elif pin.name in pin_map.stable_inputs:
-                        if pin_map.stable_inputs[pin.name] == '0':
-                            connections.append(settings.primary_ground.name)
-                        else:
-                            connections.append(settings.primary_power.name)
-                    elif pin.name in pin_map.ignored_outputs:
+                        circuit.C(pin.name, f'v{pin.name}', circuit.gnd,
+                                  loads[0]*settings.units.capacitance)
+                    elif pin.name in cell.outputs:
                         connections.append('wfloat0')
                     else:
                         raise ValueError(f'Unable to connect unrecognized logic pin {pin.name} in cell {cell.name}')
@@ -131,76 +157,129 @@ def measure_delays_for_path_with_criterion(cell, config, settings, variation, pa
                     raise ValueError(f'Unable to connect unrecognized pin {pin.name} in cell {cell.name}')
         circuit.X('dut', cell.name, *connections)
 
-        # Build the simulation
         simulator = PySpice.Simulator.factory(simulator=settings.simulation.backend)
         simulation = simulator.simulation(
             circuit,
             temperature=settings.temperature,
             nominal_temperature=settings.temperature
         )
-        simulation.options('autostop', trtol=1)
-        for measure in measurements:
-            simulation.measure(*measure, run=False)
-        simulation.transient(step_time=data_slew/8, end_time=t_sim_end, run=False)
+        simulation.options(trtol=1)
 
-        stable_pins_map_str = ', '.join(['='.join([pin, state]) for pin, state in pin_map.stable_inputs.items()])
+        shared = getattr(simulator, 'ngspice', None)
+        if shared is None:
+            raise ProcedureFailedException(
+                f'Backend {settings.simulation.backend} does not expose an interactive '
+                'ngspice session; combinational delay measurement requires ngspice-shared')
 
+        # In debug mode the session transcript is written incrementally, so a
+        # killed run still leaves the evidence of what it was doing.
+        log_file = None
         if settings.debug:
             debug_path = settings.debug_dir / cell.name / __name__.split('.')[-1]
             debug_path.mkdir(parents=True, exist_ok=True)
-            with open(debug_path / f'slew = {data_slew} load = {load}.sp', 'w', encoding='utf-8') as file:
+            stem = f'{input_pin}_to_{output_pin}_{"rise" if output_transition == "01" else "fall"}'
+            with open(debug_path / f'{stem}.sp', 'w', encoding='utf-8') as file:
                 file.write(str(simulation))
+            log_file = open(debug_path / f'{stem}.commands', 'w', encoding='utf-8')
 
-        # Skip simulation if this is a dry-run
-        if settings.dry_run:
-            # TODO: Display a message if not settings.quiet
-            continue
+        def execute(command):
+            if log_file:
+                log_file.write(command + '\n')
+                log_file.flush()
+            output = shared.exec_command(command)
+            if log_file and output:
+                log_file.write(''.join(f'* {line}\n' for line in output.splitlines()))
+                log_file.flush()
+            return output
 
-        # Run the simulation, taking all measurements
         try:
-            analyses[stable_pins_map_str] = simulator.run(simulation)
-        except Exception as e:
-            msg = f'Procedure measure_worst_case_delay_for_path failed for cell {cell.name} ' \
-                  f'with variation {variation}, pin states {state_map}'
-            raise ProcedureFailedException(msg) from e
+            shared.destroy()
+            shared.load_circuit(str(simulation))
+            # Parallelism lives at the process level (one worker per core);
+            # ngspice's own OpenMP threads only fight each other there — with
+            # several concurrent instances their active-wait barriers slow a
+            # cell-sized tran by orders of magnitude (and OMP_NUM_THREADS is
+            # overridden by ngspice, so it must be set in-session).
+            execute('set num_threads = 1')
 
-    # Select the worst-case delays and add to LUTs
+            t_longest = None # longest value measured so far in this session [s]
+            for pin_map in pin_maps:
+                measurements = _condition_measurements(pin_map, settings.logic_thresholds, vdd)
+                for slew in slews:
+                    data_slew = slew * settings.units.time
+                    for name in cell.inputs:
+                        if name in pin_map.target_inputs:
+                            (v_0, v_1) = (vss, vdd) if pin_map.target_inputs[name] == '01' else (vdd, vss)
+                        else:
+                            v_0 = v_1 = vss if pin_map.stable_inputs[name] == '0' else vdd
+                        execute(_pwl_alter(f'v{name}',
+                                           utils.slew_pwl(v_0, v_1, data_slew, 3*data_slew, low, high)))
+                    t_step = float(data_slew) / 8
+                    t_settled = float(3*data_slew) + float(data_slew) / (high - low)
+                    t_ceiling = float(max(t_end_config, 1000*data_slew))
+                    for load in loads:
+                        for out_pin in capped_outputs:
+                            execute(f'alter c{out_pin} = {_fmt(load*settings.units.capacitance)}')
+                        # Two-pass windows: generous ceiling until something is
+                        # measured, then derived from the measured values and
+                        # grown on failure.
+                        t_window = t_ceiling if t_longest is None \
+                              else min(t_settled + 8*t_longest, t_ceiling)
+                        while True:
+                            execute(f'tran {_fmt(t_step)} {_fmt(t_window)}')
+                            values = {}
+                            for name, command in measurements:
+                                try:
+                                    output = execute(command)
+                                except Exception:
+                                    output = ''
+                                match = re.search(rf'{name}\s*=\s*([\-+0-9.eE]+)', output)
+                                values[name] = float(match.group(1)) if match else None
+                            execute('destroy all')
+                            if all(v is not None for v in values.values()) or t_window >= t_ceiling:
+                                break
+                            t_window = min(2*t_window, t_ceiling)
+                        for name, value in values.items():
+                            if value is not None:
+                                samples.setdefault(name, {}).setdefault((load, slew), []).append(value)
+                                t_longest = max(t_longest or 0, value)
+        except ProcedureFailedException:
+            raise
+        except Exception as e:
+            msg = f'Procedure measure_delay_matrix_for_path failed for cell {cell.name} ' \
+                  f'on path {path}'
+            raise ProcedureFailedException(msg) from e
+        finally:
+            if log_file:
+                log_file.close()
+
+        # Every point of every table must have been measured
+        if not samples:
+            raise ProcedureFailedException(
+                f'Procedure measure_delay_matrix_for_path failed for cell {cell.name} '
+                f'on path {path}: no measurement succeeded')
+        for name, matrix in samples.items():
+            missing = {point for point in ((l, s) for l in loads for s in slews)} - set(matrix)
+            if missing:
+                msg = f'Procedure measure_delay_matrix_for_path failed for cell {cell.name} ' \
+                      f'on path {path}: no measurement of {name} at points {sorted(missing)}'
+                raise ProcedureFailedException(msg)
+
+    # Apply the selection criterion across conditions and build full LUTs
     result = cell.liberty
     timing_group = liberty.Group('timing')
     timing_group.add_attribute('related_pin', input_pin)
     timing_type = 'combinational_rise' if output_transition == '01' else 'combinational_fall'
     timing_group.add_attribute('timing_type', timing_type)
-    for name in measurement_names:
-        # Get the worst delay & plot io
-        if 'io' in config.plots:
-            fig = plots.plot_io_voltages(analyses.values(), list(pin_map.target_inputs.keys()),
-                                         list(pin_map.target_outputs.keys()),
-                                         legend_labels=analyses.keys(),
-                                         indicate_voltages=[settings.primary_power.voltage*settings.logic_thresholds.low,
-                                                            settings.primary_power.voltage*settings.logic_thresholds.high])
-            # FIXME: let user decide whether to show or save
-            fig_path = settings.plots_dir / cell.name / 'io'
-            fig_path.mkdir(parents=True, exist_ok=True)
-            fig.savefig(fig_path / f'{name} with slew = {data_slew} load = {load}.png') # FIXME: filetype should be configurable
-            plt.close(fig)
-
-        # Build LUT
-        delay_measurements = [analysis.measurements[name] for analysis in analyses.values() if name in analysis.measurements]
-        try:
-            delay = criterion(delay_measurements) @ PySpice.Unit.u_s
-        except ValueError as e:
-            if settings.dry_run:
-                delay = -1 @ PySpice.Unit.u_s
-            else:
-                msg = f'Procedure measure_worst_case_delay_for_path failed for cell {cell.name} ' \
-                      f'with variation {variation}, pin states {state_map}'
-                raise ProcedureFailedException(msg) from e
+    lut_template = f'delay_template_{len(loads)}x{len(slews)}'
+    for name, matrix in samples.items():
         lut_name, *_ = name.split('__')
-        lut_template_size = f'{len(config.parameters["loads"])}x{len(config.parameters["data_slews"])}'
-        lut = LookupTable(lut_name, f'delay_template_{lut_template_size}',
-                          total_output_net_capacitance=[load.convert(settings.units.capacitance.prefixed_unit).value],
-                          input_net_transition=[data_slew.convert(settings.units.time.prefixed_unit).value])
-        lut.values[0,0] = delay.convert(settings.units.time.prefixed_unit).value
+        lut = LookupTable(lut_name, lut_template,
+                          total_output_net_capacitance=list(loads),
+                          input_net_transition=list(slews))
+        for (load, slew), condition_values in matrix.items():
+            value = criterion(condition_values) @ PySpice.Unit.u_s
+            lut[load, slew] = value.convert(settings.units.time.prefixed_unit).value
         timing_group.add_group(lut)
     result.group('pin', output_pin).add_group(timing_group)
 
