@@ -28,3 +28,13 @@ def register(*parameters):
 class ProcedureFailedException(Exception):
     """Indicates that the procedure failed for the reason specified in the message."""
     pass
+
+@register
+def skip(cell, config, settings):
+    """No-op procedure: schedules no simulations for its measurement slot.
+
+    Select it for any procedure in settings.simulation (e.g.
+    ``combinational_leakage_procedure: skip``) to disable that measurement
+    entirely; the corresponding liberty data is simply absent from the output.
+    """
+    return []
