@@ -203,9 +203,11 @@ class ConfigFile:
                 description='Pushout threshold used by the setup_hold_pushout procedure: a '
                             'setup probe fails when the data-to-output delay exceeds this '
                             'multiple of the open-gate reference delay. The default is the '
-                            'house value ratified against the official sg13g2_dlhq_1 tables '
-                            '(TT, 1.2 V, 25 C).'
-            ), default=1.1
+                            'house value calibrated against the official sg13g2_dlhq_1 '
+                            'tables (TT, 1.2 V, 25 C) over the full CONSTRAINT_4x4 grid: '
+                            '1.2 keeps every point within 18 ps, where 1.1 was pessimistic '
+                            'by up to 130 ps at slow gate slews.'
+            ), default=1.2
         ) : Or(float, int),
         Optional(
             Literal(

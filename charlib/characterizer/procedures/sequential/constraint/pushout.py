@@ -80,7 +80,7 @@ def measure_constraint_matrix(cell, config, settings, kind, data_transition):
     v50 = float(vdd) * 0.5
     load = config.parameters.get('metastability_constraint_load', 0.1) \
          * settings.units.capacitance
-    criterion = config.parameters.get('setup_pushout_criterion', 1.1)
+    criterion = config.parameters.get('setup_pushout_criterion', 1.2)
     depth = config.parameters.get('hold_disturbance_depth', 0.1)
     t_period = 2e-6
 
