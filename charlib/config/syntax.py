@@ -199,6 +199,26 @@ class ConfigFile:
         ) : Or(float, int),
         Optional(
             Literal(
+                'setup_pushout_criterion',
+                description='Pushout threshold used by the setup_hold_pushout procedure: a '
+                            'setup probe fails when the data-to-output delay exceeds this '
+                            'multiple of the open-gate reference delay. The default is the '
+                            'house value ratified against the official sg13g2_dlhq_1 tables '
+                            '(TT, 1.2 V, 25 C).'
+            ), default=1.1
+        ) : Or(float, int),
+        Optional(
+            Literal(
+                'hold_disturbance_depth',
+                description='Disturbance depth used by the setup_hold_pushout procedure: a '
+                            'hold probe fails when the output leaves the captured rail by '
+                            'this fraction of the supply voltage. The default is the house '
+                            'value ratified against the official sg13g2_dlhq_1 tables '
+                            '(TT, 1.2 V, 25 C).'
+            ), default=0.1
+        ) : Or(float, int),
+        Optional(
+            Literal(
                 'metastability_constraint_sweep_samples',
                 description='Number of samples per axis in the 2D setup/hold contour sweep ' \
                             'for sequential cell characterization. Higher values give finer ' \

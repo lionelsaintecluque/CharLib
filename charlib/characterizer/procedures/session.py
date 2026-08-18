@@ -10,6 +10,12 @@ def fmt(value):
     return f'{float(value):.12e}'
 
 
+def pulse_alter(source, v_1, v_2, t_delay, t_ramp, t_width, t_period):
+    """Build the command altering a PULSE source to the given parameters."""
+    return (f'alter @{source}[pulse] = [ {fmt(v_1)} {fmt(v_2)} {fmt(t_delay)} '
+            f'{fmt(t_ramp)} {fmt(t_ramp)} {fmt(t_width)} {fmt(t_period)} ]')
+
+
 class Session:
     """One loaded circuit in an interactive ngspice-shared session.
 

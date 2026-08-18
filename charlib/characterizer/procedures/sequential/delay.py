@@ -28,10 +28,10 @@ handled yet.
 
 import PySpice
 
-from charlib.characterizer import utils
-from charlib.characterizer.cell import Port
 from charlib.characterizer.procedures import register, ProcedureFailedException
-from charlib.characterizer.procedures.session import Session, fmt
+from charlib.characterizer.procedures.session import Session, fmt, pulse_alter
+from charlib.characterizer.procedures.sequential.testbench import (
+    single_data_gate_output, latch_circuit)
 from charlib.liberty import liberty
 from charlib.liberty.library import LookupTable
 
@@ -49,11 +49,6 @@ def sequential_worst_case(cell, config, settings):
         yield (measure_arc_matrix, cell, config, settings, 'transparent', output_transition)
         yield (measure_arc_matrix, cell, config, settings, 'opening', output_transition)
 
-def _pulse_alter(source, v_1, v_2, t_delay, t_ramp, t_width, t_period):
-    """Build the command altering a PULSE source to the given parameters."""
-    return (f'alter @{source}[pulse] = [ {fmt(v_1)} {fmt(v_2)} {fmt(t_delay)} '
-            f'{fmt(t_ramp)} {fmt(t_ramp)} {fmt(t_width)} {fmt(t_period)} ]')
-
 def measure_arc_matrix(cell, config, settings, arc, output_transition):
     """Measure the full delay matrix of one sequential arc, in one session.
 
@@ -65,19 +60,7 @@ def measure_arc_matrix(cell, config, settings, arc, output_transition):
                 edge propagating a value stored while opaque).
     :param output_transition: The output transition of interest, '01' or '10'.
     """
-    gate = cell.clock or cell.enable
-    if gate is None:
-        raise ProcedureFailedException(
-            f'Cell {cell.name} declares no clock or enable pin; sequential delay '
-            'measurement needs the gate declared (closing edge) in the cell config')
-    data_inputs = cell.inputs
-    outputs = cell.outputs
-    if len(data_inputs) != 1 or len(outputs) != 1:
-        raise ProcedureFailedException(
-            f'Cell {cell.name}: only single-data-input, single-output level-sensitive '
-            f'cells are supported for now (found inputs {data_inputs}, outputs {outputs})')
-    [data] = data_inputs
-    [out] = outputs
+    data, gate, out = single_data_gate_output(cell)
 
     out_dir = 'rise' if output_transition == '01' else 'fall'
     # The declared gate edge is the CLOSING edge: negedge-closing means
@@ -101,35 +84,8 @@ def measure_arc_matrix(cell, config, settings, arc, output_transition):
     points = {}
 
     if not settings.dry_run:
-        # Build the one test circuit for this arc: data and gate each get a
-        # PULSE source (parameters swapped by `alter` at every point), the
-        # output gets its load capacitor.
-        circuit = utils.init_circuit('seq_delay', cell.netlist, config.models,
-                                     settings.named_nodes, settings.units)
-        connections = []
-        for pin in cell.pins_in_netlist_order():
-            if pin.name in (data, gate.name):
-                connections.append(f'v{pin.name}')
-                circuit.PulseVoltageSource(pin.name, f'v{pin.name}', circuit.gnd,
-                                           initial_value=vss, pulsed_value=vss,
-                                           pulse_width=1e-6, period=t_period)
-            elif pin.name == out:
-                connections.append(f'v{pin.name}')
-                circuit.C(pin.name, f'v{pin.name}', circuit.gnd,
-                          loads[0]*settings.units.capacitance)
-            else:
-                match pin.role:
-                    case Port.Role.POWER:
-                        connections.append(settings.primary_power.name)
-                    case Port.Role.GROUND:
-                        connections.append(settings.primary_ground.name)
-                    case Port.Role.NWELL:
-                        connections.append(settings.nwell.name)
-                    case Port.Role.PWELL:
-                        connections.append(settings.pwell.name)
-                    case _:
-                        raise ValueError(f'Unable to connect unrecognized pin {pin.name} in cell {cell.name}')
-        circuit.X('dut', cell.name, *connections)
+        circuit = latch_circuit(cell, config, settings, data, gate, out,
+                                loads[0]*settings.units.capacitance, t_period)
 
         simulator = PySpice.Simulator.factory(simulator=settings.simulation.backend)
         simulation = simulator.simulation(
@@ -160,18 +116,18 @@ def measure_arc_matrix(cell, config, settings, arc, output_transition):
                 t2 = t1 + s + 1e-9  # the measured opening edge
                 if arc == 'transparent':
                     (v_from, v_to) = (vss, vdd) if out_dir == 'rise' else (vdd, vss)
-                    session.execute(_pulse_alter(f'v{data}', v_from, v_to, t0, s,
+                    session.execute(pulse_alter(f'v{data}', v_from, v_to, t0, s,
                                                  1e-6, t_period))
-                    session.execute(_pulse_alter(f'v{gate.name}', v_transp, v_transp, t0, s,
+                    session.execute(pulse_alter(f'v{gate.name}', v_transp, v_transp, t0, s,
                                                  1e-6, t_period))
                     in_sig, in_dir = data, out_dir
                     t_skip, t_edge = t0/2, t0
                 else:
                     (v_old, v_new) = (vss, vdd) if out_dir == 'rise' else (vdd, vss)
-                    session.execute(_pulse_alter(f'v{data}', v_old, v_new, t1, s,
+                    session.execute(pulse_alter(f'v{data}', v_old, v_new, t1, s,
                                                  1e-6, t_period))
                     # the gate closes at t0 and reopens with the edge under test at t2
-                    session.execute(_pulse_alter(f'v{gate.name}', v_transp, v_opaque, t0, s,
+                    session.execute(pulse_alter(f'v{gate.name}', v_transp, v_opaque, t0, s,
                                                  t2 - t0 - s, t_period))
                     in_sig, in_dir = gate.name, open_dir
                     t_skip, t_edge = t2 - 0.5e-9, t2
