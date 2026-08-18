@@ -1,5 +1,7 @@
 """Dispatches characterization jobs and manages cell data"""
 
+import multiprocessing
+
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from tqdm import tqdm
@@ -83,10 +85,22 @@ class Characterizer:
         for (cell, config) in self.cells:
             simulation_tasks += self.analyse_cell(cell, config)
 
+        # max_tasks_per_child=1 guarantees every simulation a pristine process
+        # (libngspice cannot be reset once loaded), but it also forces the
+        # "spawn" start method, which re-imports the whole stack for every
+        # task. Forking each worker from a preloaded server keeps the
+        # fresh-process guarantee while paying the imports only once.
+        try:
+            mp_context = multiprocessing.get_context('forkserver')
+            mp_context.set_forkserver_preload(['charlib.characterizer.characterizer'])
+        except ValueError:
+            mp_context = None # platform without forkserver: fall back to spawn
+
         # Run all simulation jobs and merge each resulting liberty cell group into the library
         with tqdm(bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
                   total=len(simulation_tasks), desc="Characterizing") as progress_bar:
-            with ProcessPoolExecutor(max_workers=self.settings.jobs, max_tasks_per_child=1) as executor:
+            with ProcessPoolExecutor(max_workers=self.settings.jobs, max_tasks_per_child=1,
+                                     mp_context=mp_context) as executor:
                 futures = [executor.submit(task, *args) for (task, *args) in simulation_tasks]
                 for future in as_completed(futures):
                     try:
