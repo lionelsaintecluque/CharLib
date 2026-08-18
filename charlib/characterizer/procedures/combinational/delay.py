@@ -11,14 +11,13 @@ derive their window from the longest value measured so far and grow it on
 measurement failure.
 """
 
-import re
-
 import PySpice
 from numpy import average
 
 from charlib.characterizer import utils
 from charlib.characterizer.cell import Port
 from charlib.characterizer.procedures import register, ProcedureFailedException
+from charlib.characterizer.procedures.session import Session, fmt
 from charlib.liberty import liberty
 from charlib.liberty.library import LookupTable
 
@@ -35,13 +34,9 @@ def combinational_average(cell, config, settings):
         yield (measure_delay_matrix_for_path, cell, config, settings, path, average)
 
 
-def _fmt(value):
-    """Render a quantity as a plain SI float for an interactive ngspice command."""
-    return f'{float(value):.12e}'
-
 def _pwl_alter(source, points):
     """Build the command altering a PWL source to the given (time, voltage) vertices."""
-    flat = ' '.join(f'{_fmt(t)} {_fmt(v)}' for (t, v) in points)
+    flat = ' '.join(f'{fmt(t)} {fmt(v)}' for (t, v) in points)
     return f'alter @{source}[pwl] = [ {flat} ]'
 
 def _condition_measurements(pin_map, thresholds, vdd):
@@ -165,42 +160,18 @@ def measure_delay_matrix_for_path(cell, config, settings, path, criterion=max):
         )
         simulation.options(trtol=1)
 
-        shared = getattr(simulator, 'ngspice', None)
-        if shared is None:
-            raise ProcedureFailedException(
-                f'Backend {settings.simulation.backend} does not expose an interactive '
-                'ngspice session; combinational delay measurement requires ngspice-shared')
-
-        # In debug mode the session transcript is written incrementally, so a
-        # killed run still leaves the evidence of what it was doing.
-        log_file = None
+        log_path = None
         if settings.debug:
             debug_path = settings.debug_dir / cell.name / __name__.split('.')[-1]
             debug_path.mkdir(parents=True, exist_ok=True)
             stem = f'{input_pin}_to_{output_pin}_{"rise" if output_transition == "01" else "fall"}'
             with open(debug_path / f'{stem}.sp', 'w', encoding='utf-8') as file:
                 file.write(str(simulation))
-            log_file = open(debug_path / f'{stem}.commands', 'w', encoding='utf-8')
+            log_path = debug_path / f'{stem}.commands'
 
-        def execute(command):
-            if log_file:
-                log_file.write(command + '\n')
-                log_file.flush()
-            output = shared.exec_command(command)
-            if log_file and output:
-                log_file.write(''.join(f'* {line}\n' for line in output.splitlines()))
-                log_file.flush()
-            return output
-
+        session = None
         try:
-            shared.destroy()
-            shared.load_circuit(str(simulation))
-            # Parallelism lives at the process level (one worker per core);
-            # ngspice's own OpenMP threads only fight each other there — with
-            # several concurrent instances their active-wait barriers slow a
-            # cell-sized tran by orders of magnitude (and OMP_NUM_THREADS is
-            # overridden by ngspice, so it must be set in-session).
-            execute('set num_threads = 1')
+            session = Session(simulator, simulation, settings, log_path=log_path)
 
             t_longest = None # longest value measured so far in this session [s]
             for pin_map in pin_maps:
@@ -212,30 +183,24 @@ def measure_delay_matrix_for_path(cell, config, settings, path, criterion=max):
                             (v_0, v_1) = (vss, vdd) if pin_map.target_inputs[name] == '01' else (vdd, vss)
                         else:
                             v_0 = v_1 = vss if pin_map.stable_inputs[name] == '0' else vdd
-                        execute(_pwl_alter(f'v{name}',
-                                           utils.slew_pwl(v_0, v_1, data_slew, 3*data_slew, low, high)))
+                        session.execute(_pwl_alter(f'v{name}',
+                                        utils.slew_pwl(v_0, v_1, data_slew, 3*data_slew, low, high)))
                     t_step = float(data_slew) / 8
                     t_settled = float(3*data_slew) + float(data_slew) / (high - low)
                     t_ceiling = float(max(t_end_config, 1000*data_slew))
                     for load in loads:
                         for out_pin in capped_outputs:
-                            execute(f'alter c{out_pin} = {_fmt(load*settings.units.capacitance)}')
+                            session.execute(f'alter c{out_pin} = {fmt(load*settings.units.capacitance)}')
                         # Two-pass windows: generous ceiling until something is
                         # measured, then derived from the measured values and
                         # grown on failure.
                         t_window = t_ceiling if t_longest is None \
                               else min(t_settled + 8*t_longest, t_ceiling)
                         while True:
-                            execute(f'tran {_fmt(t_step)} {_fmt(t_window)}')
-                            values = {}
-                            for name, command in measurements:
-                                try:
-                                    output = execute(command)
-                                except Exception:
-                                    output = ''
-                                match = re.search(rf'{name}\s*=\s*([\-+0-9.eE]+)', output)
-                                values[name] = float(match.group(1)) if match else None
-                            execute('destroy all')
+                            session.execute(f'tran {fmt(t_step)} {fmt(t_window)}')
+                            values = {name: session.measure(name, command)
+                                      for name, command in measurements}
+                            session.execute('destroy all')
                             if all(v is not None for v in values.values()) or t_window >= t_ceiling:
                                 break
                             t_window = min(2*t_window, t_ceiling)
@@ -250,8 +215,8 @@ def measure_delay_matrix_for_path(cell, config, settings, path, criterion=max):
                   f'on path {path}'
             raise ProcedureFailedException(msg) from e
         finally:
-            if log_file:
-                log_file.close()
+            if session:
+                session.close()
 
         # Every point of every table must have been measured
         if not samples:
