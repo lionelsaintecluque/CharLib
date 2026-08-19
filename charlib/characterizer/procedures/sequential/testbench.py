@@ -5,6 +5,15 @@ from charlib.characterizer.cell import Port
 from charlib.characterizer.procedures import ProcedureFailedException
 
 
+def transparent_high(gate):
+    """A ``clock``-declared gate names its CLOSING edge (negedge closes
+    falling, so transparency is high); an ``enable``-declared gate names
+    its ACTIVE level (inverted means transparent low)."""
+    if gate.trigger == Port.Trigger.EDGE:
+        return gate.inversion
+    return not gate.inversion
+
+
 def single_data_gate_output(cell):
     """Return (data, gate pin, output) for a single-data level-sensitive cell.
 

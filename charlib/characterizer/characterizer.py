@@ -66,7 +66,8 @@ class Characterizer:
         if cell.is_sequential:
             # Find setup & hold constraints (clock-to-q, en-to-q)
             simulations += self.settings.simulation.metastability_constraint(cell, config, self.settings)
-            # TODO: Find minimum pulse width constraints (set, reset, enable, clock)
+            # Find minimum pulse width constraints (set, reset, enable, clock)
+            simulations += self.settings.simulation.min_pulse_width_constraint(cell, config, self.settings)
             # Find recovery & removal constraints (clk/en-to-set, clk/en-to-reset)
             simulations += self.settings.simulation.recovery_constraint(cell, config, self.settings)
             simulations += self.settings.simulation.removal_constraint(cell, config, self.settings)

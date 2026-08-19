@@ -31,7 +31,7 @@ import PySpice
 from charlib.characterizer.procedures import register, ProcedureFailedException
 from charlib.characterizer.procedures.session import Session, fmt, pulse_alter
 from charlib.characterizer.procedures.sequential.testbench import (
-    single_data_gate_output, latch_circuit)
+    single_data_gate_output, latch_circuit, transparent_high)
 from charlib.liberty import liberty
 from charlib.liberty.library import LookupTable
 
@@ -63,9 +63,7 @@ def measure_arc_matrix(cell, config, settings, arc, output_transition):
     data, gate, out = single_data_gate_output(cell)
 
     out_dir = 'rise' if output_transition == '01' else 'fall'
-    # The declared gate edge is the CLOSING edge: negedge-closing means
-    # transparent-high and an opening edge that rises.
-    v_transparent_high = gate.inversion
+    v_transparent_high = transparent_high(gate)
     open_dir = 'rise' if v_transparent_high else 'fall'
 
     slews = config.parameters['data_slews'] if arc == 'transparent' \

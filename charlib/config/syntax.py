@@ -211,6 +211,34 @@ class ConfigFile:
         ) : Or(float, int),
         Optional(
             Literal(
+                'min_pulse_width_pushout_criterion',
+                description='Pushout threshold used by the min_pulse_width procedure: a '
+                            'probe pulse fails when the gate-to-output delay exceeds this '
+                            'multiple of the wide-pulse reference delay (the verdict also '
+                            'requires the output to be captured at the deadline). The '
+                            'default is the house value calibrated against the official '
+                            'sg13g2_dlhq_1 table (TT, 1.2 V, 25 C).'
+            ), default=1.05
+        ) : Or(float, int),
+        Optional(
+            Literal(
+                'qualification_frequency',
+                description='The clock frequency the cell is qualified against, in Hz. '
+                            'Together with qualification_duty_cycle it sets the '
+                            'transparency contract every reference width and coarse '
+                            'window derives from; a cell that cannot settle inside its '
+                            'contract is disqualified, not measured.'
+            ), default=100e6
+        ) : Or(float, int),
+        Optional(
+            Literal(
+                'qualification_duty_cycle',
+                description='The duty cycle of the qualification clock. See '
+                            'qualification_frequency.'
+            ), default=0.5
+        ) : Or(float, int),
+        Optional(
+            Literal(
                 'hold_disturbance_depth',
                 description='Disturbance depth used by the setup_hold_pushout procedure: a '
                             'hold probe fails when the output leaves the captured rail by '

@@ -227,12 +227,12 @@ class LookupTable(liberty.Group):
             index_values = [f"{v:.{precision}f}" for v in self.index_values[i]]
             lut_str += [f'{inner_indent}index_{i+1} ("{", ".join(index_values)}") ;']
 
-        # Display LUT values
+        # Display LUT values (a 1-D table is a single row)
+        table = np.atleast_3d(np.atleast_2d(self.values))
         lut_str += [f'{inner_indent}values ( \\']
-        sets = 1 if len(self.index_values) < 3 else len(self.index_values[2])
-        for s in range(sets):
-            for i in range(len(self.index_values[0])):
-                values = [f"{v:.{precision}f}" for v in np.atleast_3d(self.values)[i,:,s]]
+        for s in range(table.shape[2]):
+            for row in table[:, :, s]:
+                values = [f"{v:.{precision}f}" for v in row]
                 lut_str += [f'{value_indent}"{", ".join(values)}" \\']
         lut_str += [f'{inner_indent}) ;']
         lut_str += [f'{indent}}} /* end {self.name} */']

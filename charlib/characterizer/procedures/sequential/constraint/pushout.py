@@ -39,7 +39,7 @@ import PySpice
 from charlib.characterizer.procedures import register, ProcedureFailedException
 from charlib.characterizer.procedures.session import Session, fmt, pulse_alter
 from charlib.characterizer.procedures.sequential.testbench import (
-    single_data_gate_output, latch_circuit)
+    single_data_gate_output, latch_circuit, transparent_high)
 from charlib.liberty import liberty
 from charlib.liberty.library import LookupTable
 
@@ -68,13 +68,14 @@ def measure_constraint_matrix(cell, config, settings, kind, data_transition):
     data, gate, out = single_data_gate_output(cell)
 
     d_dir = 'rise' if data_transition == '01' else 'fall'
-    closing_dir = 'fall' if gate.inversion else 'rise'
+    is_transparent_high = transparent_high(gate)
+    closing_dir = 'fall' if is_transparent_high else 'rise'
 
     d_slews = config.parameters['data_slews']
     g_slews = config.parameters.get('clock_slews', d_slews)
     vdd = settings.primary_power.voltage * settings.units.voltage
     vss = settings.primary_ground.voltage * settings.units.voltage
-    v_transp, v_opaque = (vdd, vss) if gate.inversion else (vss, vdd)
+    v_transp, v_opaque = (vdd, vss) if is_transparent_high else (vss, vdd)
     low = settings.logic_thresholds.low
     high = settings.logic_thresholds.high
     v50 = float(vdd) * 0.5
