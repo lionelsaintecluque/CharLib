@@ -19,6 +19,7 @@ import charlib.characterizer.procedures.pin_capacitance.charge_integration
 import charlib.characterizer.procedures.combinational.delay
 import charlib.characterizer.procedures.combinational.leakage_power
 import charlib.characterizer.procedures.sequential.delay
+import charlib.characterizer.procedures.sequential.delay_ff
 import charlib.characterizer.procedures.sequential.constraint.metastability.binary_search
 import charlib.characterizer.procedures.sequential.constraint.pushout
 import charlib.characterizer.procedures.sequential.constraint.pushout_ff
