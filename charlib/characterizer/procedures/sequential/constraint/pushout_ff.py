@@ -73,22 +73,12 @@ def setup_hold_pushout_ff(cell, config, settings):
 
 
 def _flop_pins(cell):
-    clock = cell.clock
-    if clock is None or clock.trigger != Port.Trigger.EDGE:
-        raise ProcedureFailedException(
-            f'Cell {cell.name}: setup_hold_pushout_ff needs an edge-triggered clock')
-    if clock.inversion:
-        raise ProcedureFailedException(
-            f'Cell {cell.name}: falling-edge clocks are not supported yet')
-    reset = cell.clear or cell.preset
+    from charlib.characterizer.procedures.sequential.testbench import flop_pins
+    data, clock, reset, out = flop_pins(cell)
     if reset is None:
         raise ProcedureFailedException(
             f'Cell {cell.name}: conditioning needs a set or reset pin')
-    if len(cell.inputs) != 1 or not cell.outputs:
-        raise ProcedureFailedException(
-            f'Cell {cell.name}: only single-data-input cells are supported '
-            f'(found inputs {cell.inputs}, outputs {cell.outputs})')
-    return cell.inputs[0], clock, reset, cell.outputs[0]
+    return data, clock, reset, out
 
 
 def _pwl_alter(source, points):

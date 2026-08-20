@@ -14,6 +14,22 @@ def transparent_high(gate):
     return not gate.inversion
 
 
+def flop_pins(cell):
+    """(data, clock, async set/reset pin or None, output) of an edge-triggered cell."""
+    clock = cell.clock
+    if clock is None or clock.trigger != Port.Trigger.EDGE:
+        raise ProcedureFailedException(
+            f'Cell {cell.name}: an edge-triggered clock declaration is required')
+    if clock.inversion:
+        raise ProcedureFailedException(
+            f'Cell {cell.name}: falling-edge clocks are not supported yet')
+    if len(cell.inputs) != 1 or not cell.outputs:
+        raise ProcedureFailedException(
+            f'Cell {cell.name}: only single-data-input cells are supported '
+            f'(found inputs {cell.inputs}, outputs {cell.outputs})')
+    return cell.inputs[0], clock, (cell.clear or cell.preset), cell.outputs[0]
+
+
 def single_data_gate_output(cell):
     """Return (data, gate pin, output) for a single-data level-sensitive cell.
 
