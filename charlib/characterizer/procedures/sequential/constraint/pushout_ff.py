@@ -252,6 +252,11 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
                             f'targ v(v{clock.name}) val={v50} rise=1')
                         session.execute('destroy all')
                     else:
+                        # hold verdict = pushout on the capture arc, the same
+                        # criterion as setup (decoded on dfrbp 2026-08-20: the
+                        # survival wall sits a flat 10-20 ps beyond the official
+                        # values); the disturbance statistic stays as the
+                        # certificate witness — it alone sees late recovery bumps
                         t_from = edge_t + s_c/2 + 2*t_ref
                         t_dl = edge_t + s_c/2 + 5*t_ref
                         t_win = edge_t + s_c/2 + 6*t_ref
@@ -264,9 +269,10 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
                             session.execute(_pwl_alter(f'v{data}',
                                             d_points(s_d, b_td, b_td + s_d)))
                             session.execute(f'tran {fmt(t_step)} {fmt(t_win)}{blind_arg}')
-                            m_dist = session.measure('m_dist', m_dist_cmd)
+                            m_push = session.measure('m_push',
+                                m_ref.replace('t_ref', 'm_push'))
                             session.execute('destroy all')
-                            if m_dist is None or disturbed(m_dist):
+                            if m_push is None or m_push > criterion*t_ref:
                                 b_prev = b_td
                                 b_td = (b_td + b_next)/2
                             else:
@@ -278,9 +284,12 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
                         value = session.measure('m_hold',
                             f'meas tran m_hold trig v(v{clock.name}) val={v50} rise=1 '
                             f'targ v(v{data}) val={v50} {d_edge}=1')
+                        m_push = session.measure('m_push',
+                            m_ref.replace('t_ref', 'm_push'))
                         witness = session.measure('m_dist', m_dist_cmd)
                         session.execute('destroy all')
-                        if witness is None or disturbed(witness):
+                        if m_push is None or m_push > criterion*t_ref \
+                           or witness is None or disturbed(witness):
                             value = None
                     if value is not None:
                         points[(d_slew, c_slew)] = value
