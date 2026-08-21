@@ -18,6 +18,10 @@ procedure — probes never leave the 90 %-swing validity domain
 (4/3 x slew), the floor is probed first with the full verdict and that
 run doubles as the certificate. Saturation at the contract-wide end is
 a failure, not a value.
+
+Criterion ratified full-grid at the house-wide x1.2 (per-family
+elections within a few ps of it). EXPERIMENTAL as long as hard
+temporal constants remain in this file (see the banners).
 """
 
 import PySpice

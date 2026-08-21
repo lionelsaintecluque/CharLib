@@ -17,6 +17,10 @@ The constrained axis (the async pin's transition) reuses ``data_slews``;
 the related axis is ``clock_slews``. Rising-edge clocks only; the
 measured output is the first declared one. The assertion preceding the
 edge is assumed to satisfy the pin's own min_pulse_width (its rung).
+
+Criteria ratified full-grid (x1.2 shared with setup; the removal depth
+is insensitive — 0.1/0.3/0.5 identical). EXPERIMENTAL as long as hard
+temporal constants remain in this file (see the banner).
 """
 
 import PySpice

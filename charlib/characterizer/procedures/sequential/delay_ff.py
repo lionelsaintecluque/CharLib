@@ -9,9 +9,9 @@ references to publishing tables.
 
 Any output beyond the first is assumed to be the complement of the
 first and is measured with inverted polarities in the same transients;
-the calibration diff against the official tables is the judge of that
-assumption. Same experimental caveat as pushout_ff: the reset
-conditioning pulse is a bare constant (see its banners).
+the calibration diff against the official tables validated that
+assumption. EXPERIMENTAL as long as hard temporal constants remain
+(the reset conditioning pulse imported from pushout_ff's banners).
 """
 
 import PySpice

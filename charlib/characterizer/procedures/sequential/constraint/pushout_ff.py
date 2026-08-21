@@ -7,9 +7,15 @@ directions that need a captured 1 first, counters blinded by the saved
 window start where a prior clock edge exists, setup verdict by clk-to-Q
 pushout, hold verdict by a bounded disturbance statistic.
 
-EXPERIMENTAL: assumes the reset is already characterized (its pulse width
-below is a bare constant, not a measured value) — see the banners.
-Rising-edge clocks only; the measured output is the first declared one.
+Criteria ratified over the full official CONSTRAINT_4x4 grid
+(2026-08-22, 348-point campaign): the single x1.2 pushout criterion
+drives setup, hold and recovery; the hold disturbance depth is a
+certificate witness and the results are insensitive to it.
+
+EXPERIMENTAL as long as hard temporal constants remain in this file
+(see the banners): the reset conditioning pulse is assumed
+characterized, not measured. Rising-edge clocks only; the measured
+output is the first declared one.
 """
 
 import PySpice

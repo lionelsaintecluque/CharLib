@@ -212,13 +212,15 @@ class ConfigFile:
         Optional(
             Literal(
                 'min_pulse_width_pushout_criterion',
-                description='Pushout threshold used by the min_pulse_width procedure: a '
+                description='Pushout threshold used by the min_pulse_width procedures: a '
                             'probe pulse fails when the gate-to-output delay exceeds this '
                             'multiple of the wide-pulse reference delay (the verdict also '
                             'requires the output to be captured at the deadline). The '
-                            'default is the house value calibrated against the official '
-                            'sg13g2_dlhq_1 table (TT, 1.2 V, 25 C).'
-            ), default=1.05
+                            'default 1.2 is the single criterion ratified over the full '
+                            'official grids of the calibration cells (TT, 1.2 V, 25 C): '
+                            'x1.2 drives every pushout family — setup, hold, recovery and '
+                            'the pulse widths — with a worst-case deviation of 24 ps.'
+            ), default=1.2
         ) : Or(float, int),
         Optional(
             Literal(
