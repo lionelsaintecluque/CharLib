@@ -252,6 +252,13 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
                         t_win = edge_t + s_c/2 + 6*t_ref
                         b_lo = edge_t - s_c/2 - HOLD_LO*c_pw
                         b_hi = edge_t + s_c/2 + HOLD_HI*c_pw
+                        # the probed edge cannot start before the previous
+                        # data transition ends: earlier candidates produce a
+                        # non-monotonic PWL that ngspice rejects. Clamp the
+                        # bisection window once, with a strict guard so no
+                        # two PWL vertices share an abscissa.
+                        d_end = (d_drop if two_cycle else d_cond) + s_d
+                        b_lo = min(max(b_lo, d_end + t_step), b_hi - t_step)
                         b_prev, b_next, b_td = b_lo, b_hi, (b_lo + b_hi)/2
                         m_dist_cmd = (f'meas tran m_dist {stat} v(v{out}) '
                                       f'from={fmt(t_from)} to={fmt(t_dl)}')
