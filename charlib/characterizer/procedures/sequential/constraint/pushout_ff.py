@@ -260,6 +260,7 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
                         d_end = (d_drop if two_cycle else d_cond) + s_d
                         b_lo = min(max(b_lo, d_end + t_step), b_hi - t_step)
                         b_prev, b_next, b_td = b_lo, b_hi, (b_lo + b_hi)/2
+                        domain_clamped = b_lo > edge_t - s_c/2 - HOLD_LO*c_pw
                         m_dist_cmd = (f'meas tran m_dist {stat} v(v{out}) '
                                       f'from={fmt(t_from)} to={fmt(t_dl)}')
                         for _ in range(ITERS):
@@ -275,6 +276,11 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
                             else:
                                 b_next = b_td
                                 b_td = (b_td + b_prev)/2
+                        if domain_clamped and b_next - b_lo < 2*t_step:
+                            # the search saturated on the clamped bound: the
+                            # true constraint lies beyond what this timeline
+                            # can probe — a missing point, never a value
+                            continue
                         session.execute(_pwl_alter(f'v{data}',
                                         d_points(s_d, b_next, b_next + s_d)))
                         session.execute(f'tran {fmt(t_step)} {fmt(t_win)}{blind_arg}')
