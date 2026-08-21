@@ -27,6 +27,7 @@ import charlib.characterizer.procedures.sequential.constraint.metastability.c2q_
 import charlib.characterizer.procedures.sequential.constraint.recovery
 import charlib.characterizer.procedures.sequential.constraint.removal
 import charlib.characterizer.procedures.sequential.constraint.min_pulse_width
+import charlib.characterizer.procedures.sequential.constraint.min_pulse_width_ff
 
 class Characterizer:
     """Main object of Charlib. Keeps track of settings and cells, and schedules simulations."""
