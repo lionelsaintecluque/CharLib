@@ -92,7 +92,9 @@ def measure_leakage_for_state(cell, config, settings, state_map):
 
     result = cell.liberty
     lp_group = liberty.Group('leakage_power')
-    lp_group.add_attribute('when', build_when_str(state_map))
+    when = build_when_str(state_map)
+    if when: # a cell with no inputs has a single, unconditional state
+        lp_group.add_attribute('when', when)
     lp_group.add_attribute('value', power_value)
     result.add_group(lp_group)
     return result

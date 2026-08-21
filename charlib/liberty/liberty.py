@@ -265,6 +265,8 @@ class Attribute(Statement):
         :param value: A string value that may or may not need to be enclosed in quotes
         """
         value = value.strip()
+        if not value:
+            return '""'
         if value[0].isnumeric() or not re.match(r'^\w+$', value):
             return f'"{value}"'
         else:
