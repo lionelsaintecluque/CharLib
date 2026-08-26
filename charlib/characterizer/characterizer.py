@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 import matplotlib.pyplot as plt
 
+from charlib import measurements
 from charlib.characterizer import utils, plots
 from charlib.characterizer.cell import Cell, CellTestConfig
 from charlib.characterizer.units import UnitsSettings
@@ -60,6 +61,10 @@ class Characterizer:
 
     def analyse_cell(self, cell, config) -> list:
         """Return a list of callable characterization tasks required for this cell."""
+        # A cell with a measurement DB is assembled, not simulated
+        if config.measurements:
+            return [(measurements.build_from_measurements, cell, config, self.settings)]
+
         simulations = []
 
         # Measure input pin capacitances
@@ -107,6 +112,8 @@ class Characterizer:
             with ProcessPoolExecutor(max_workers=self.settings.jobs, max_tasks_per_child=1,
                                      mp_context=mp_context) as executor:
                 futures = [executor.submit(task, *args) for (task, *args) in simulation_tasks]
+                db_dir = self.settings.results_dir / 'measurements'
+                db_header = (f'# {self.library.identifier}',)
                 for future in as_completed(futures):
                     try:
                         cell_group = future.result()
@@ -116,6 +123,14 @@ class Characterizer:
                         else:
                             raise
                     self.library.add_group(cell_group)
+                    # measurement DB dump, one file per cell: every merged
+                    # fragment is on disk before the next one runs — the
+                    # crash checkpoint the in-memory library is not
+                    db_dir.mkdir(parents=True, exist_ok=True)
+                    measurements.dump_cell_group(
+                        cell_group,
+                        db_dir / f'{cell_group.identifier}_db.{self.library.identifier}.tcl',
+                        self.settings, header=db_header)
                     progress_bar.update(1)
 
         # Post-processing: Fetch generated table templates and add them to the library

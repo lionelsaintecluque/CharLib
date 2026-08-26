@@ -23,6 +23,17 @@ class ConfigFile:
             'netlist',
             description='The path to the spice file containing the netlist for this cell.'
         ) : str,
+        Optional(
+            Literal(
+                'measurements',
+                description='One or several per-cell measurement DB files (see '
+                            'charlib.measurements). When present, the cell\'s liberty '
+                            'tables are built from the files instead of simulated: no '
+                            'characterization procedure runs for this cell. The cell '
+                            'declaration (pins, functions, area) still comes from this '
+                            'configuration; the DB only says what was measured.'
+            )
+        ) : Or(str, [str]),
         Literal(
             'models',
             description='A list of paths to the spice models for transistors used in this cell\'s ' \

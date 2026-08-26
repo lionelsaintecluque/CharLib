@@ -315,7 +315,7 @@ class Cell:
 class CellTestConfig:
     """Capture configuration information for testing one or more cells"""
 
-    def __init__(self, models: list, plots=[], timestep=None, **parameters):
+    def __init__(self, models: list, plots=[], timestep=None, measurements=None, **parameters):
         """Construct a new test configuration.
 
         :param models: Transistor models for the cell under test
@@ -348,6 +348,7 @@ class CellTestConfig:
 
         self.timestep = timestep
         self.plots = plots
+        self.measurements = measurements
         supported_parameters = {param for rp in registered_procedures.values() for param in rp['parameters']}
         self.parameters = {k: parameters[k] for k in supported_parameters if k in parameters}
 
