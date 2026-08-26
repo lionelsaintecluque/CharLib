@@ -19,8 +19,8 @@ measured output is the first declared one. The assertion preceding the
 edge is assumed to satisfy the pin's own min_pulse_width (its rung).
 
 Criteria ratified full-grid (x1.2 shared with setup; the removal depth
-is insensitive — 0.1/0.3/0.5 identical). EXPERIMENTAL as long as hard
-temporal constants remain in this file (see the banner).
+is insensitive — 0.1/0.3/0.5 identical). Every window derives from the
+qualification contract (see the banner); guards derive from the step.
 """
 
 import PySpice
@@ -28,25 +28,24 @@ import PySpice
 from charlib.characterizer import utils
 from charlib.characterizer.cell import Port
 from charlib.characterizer.procedures import register, ProcedureFailedException
-from charlib.characterizer.procedures.session import Session, fmt, pulse_alter
+from charlib.characterizer.procedures.session import (
+    Session, fmt, pulse_alter, pwl_alter)
 from charlib.characterizer.procedures.sequential.testbench import flop_pins
 from charlib.liberty import liberty
 from charlib.liberty.library import LookupTable
 
 ITERS = 14
-T_PERIOD = 2e-6
 
-# ============================== CONSTANTES NUES =============================
+# ========================== FRACTIONS DU CONTRAT ============================
 # Chronologie et bornes, en fractions de la demi-periode active (c_pw) :
 #   0.2   release de reference, loin devant le front actif
 #   0.25  retard du front actif derriere la fin de la release de reference
 #   0.3   largeur de l'impulsion d'horloge (periode PULSE = 4 periodes)
 #   0.4   fenetre grossiere de la reference
 #   0.04 / 0.3  bornes de bissection recovery ; 0.2 / 0.5  bornes removal
-#   2 ps  garde de saturation : la bissection removal collee a sa borne
-#         haute signifie qu'aucune release sure n'existe dans la fenetre
 # Valeurs de la campagne dfrbp, validees par calibration, sans autre
-# justification — meme statut que les bannieres de pushout_ff.
+# justification — meme statut que les bannieres de pushout_ff. Les gardes
+# derivent : saturation = 2 pas fins, plancher du pas grossier = c_per/1000.
 # ============================================================================
 REF_RELEASE = 0.2
 EDGE_DELAY = 0.25
@@ -57,8 +56,6 @@ RECOVERY_LO = 0.04
 RECOVERY_HI = 0.3
 REMOVAL_LO = 0.2
 REMOVAL_HI = 0.5
-SATURATION_GUARD = 2e-12
-COARSE_STEP_FLOOR = 10e-12
 
 
 @register('data_slews', 'clock_slews', 'metastability_constraint_load',
@@ -73,11 +70,6 @@ def recovery_constraint(cell, config, settings):
     state."""
     if cell.clear or cell.preset:
         yield (measure_release_matrix, cell, config, settings, 'recovery')
-
-
-def _pwl_alter(source, points):
-    flat = ' '.join(f'{fmt(t)} {fmt(v)}' for (t, v) in points)
-    return f'alter @{source}[pwl] = [ {flat} ]'
 
 
 def measure_release_matrix(cell, config, settings, kind):
@@ -133,13 +125,11 @@ def measure_release_matrix(cell, config, settings, kind):
                     connections.append(settings.pwell.name)
                 case _:
                     connections.append(f'v{pin.name}')
-                    if pin.name == async_pin.name:
-                        circuit.PieceWiseLinearVoltageSource(pin.name, f'v{pin.name}',
-                            circuit.gnd, values=release_points(1e-9, 2e-9))
-                    elif pin.name in (data, clock.name):
-                        circuit.PulseVoltageSource(pin.name, f'v{pin.name}', circuit.gnd,
-                                                   initial_value=vss, pulsed_value=vss,
-                                                   pulse_width=1e-6, period=T_PERIOD)
+                    # empty DC sources: the session grafts every waveform by
+                    # alter before every tran, the netlist honestly reads
+                    # "driven by the session"
+                    if pin.name in (async_pin.name, data, clock.name):
+                        circuit.V(pin.name, f'v{pin.name}', circuit.gnd, vss)
                     elif pin.name == out:
                         circuit.C(pin.name, f'v{pin.name}', circuit.gnd, load)
         circuit.X('dut', cell.name, *connections)
@@ -163,8 +153,8 @@ def measure_release_matrix(cell, config, settings, kind):
         session = None
         try:
             session = Session(simulator, simulation, settings, log_path=log_path)
-            session.execute(pulse_alter(f'v{data}', d_level, d_level,
-                                        1e-9, 1e-9, 1e-6, T_PERIOD))
+            session.execute(pwl_alter(f'v{data}',
+                                      [(0, d_level), (c_per, d_level)]))
             for a_slew in a_slews:
                 s_r = float(a_slew * settings.units.time) / (high - low)
                 r_ref = REF_RELEASE * c_pw
@@ -177,9 +167,9 @@ def measure_release_matrix(cell, config, settings, kind):
                     m_ref = (f'meas tran t_ref trig v(v{clock.name}) val={v50} rise=1 '
                              f'targ v(v{out}) val={v50} {q_capture}=1')
 
-                    session.execute(_pwl_alter(f'v{async_pin.name}',
+                    session.execute(pwl_alter(f'v{async_pin.name}',
                                     release_points(r_ref, r_ref + s_r)))
-                    t_step = max(s_c/4, COARSE_STEP_FLOOR)
+                    t_step = max(s_c/4, c_per/1000)
                     t_win = edge_t + s_c/2 + REF_WIN*c_pw
                     session.execute(f'tran {fmt(t_step)} {fmt(t_win)}')
                     t_ref = session.measure('t_ref', m_ref)
@@ -199,7 +189,7 @@ def measure_release_matrix(cell, config, settings, kind):
                         t_win = edge_t + s_c/2 + 3*t_ref
                         b_fail, b_pass, b_td = b_hi, b_lo, (b_lo + b_hi)/2
                         for _ in range(ITERS):
-                            session.execute(_pwl_alter(f'v{async_pin.name}',
+                            session.execute(pwl_alter(f'v{async_pin.name}',
                                             release_points(b_td, b_td + s_r)))
                             session.execute(f'tran {fmt(t_step)} {fmt(t_win)}')
                             m_push = session.measure('m_push',
@@ -211,7 +201,7 @@ def measure_release_matrix(cell, config, settings, kind):
                             else:
                                 b_pass = b_td
                                 b_td = (b_td + b_fail)/2
-                        session.execute(_pwl_alter(f'v{async_pin.name}',
+                        session.execute(pwl_alter(f'v{async_pin.name}',
                                         release_points(b_pass, b_pass + s_r)))
                         session.execute(f'tran {fmt(t_step)} {fmt(t_win)}')
                         value = session.measure('m_recovery',
@@ -228,7 +218,7 @@ def measure_release_matrix(cell, config, settings, kind):
                         m_dist_cmd = (f'meas tran m_dist {stat} v(v{out}) '
                                       f'from={fmt(t_from)} to={fmt(t_dl)}')
                         for _ in range(ITERS):
-                            session.execute(_pwl_alter(f'v{async_pin.name}',
+                            session.execute(pwl_alter(f'v{async_pin.name}',
                                             release_points(b_td, b_td + s_r)))
                             session.execute(f'tran {fmt(t_step)} {fmt(t_win)}')
                             m_dist = session.measure('m_dist', m_dist_cmd)
@@ -239,9 +229,11 @@ def measure_release_matrix(cell, config, settings, kind):
                             else:
                                 b_next = b_td
                                 b_td = (b_td + b_prev)/2
-                        if b_next > b_hi - SATURATION_GUARD:
+                        # saturation on the search bound: no safe release
+                        # exists in the window — disqualify, don't publish
+                        if b_next > b_hi - 2*t_step:
                             continue
-                        session.execute(_pwl_alter(f'v{async_pin.name}',
+                        session.execute(pwl_alter(f'v{async_pin.name}',
                                         release_points(b_next, b_next + s_r)))
                         session.execute(f'tran {fmt(t_step)} {fmt(t_win)}')
                         value = session.measure('m_removal',

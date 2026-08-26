@@ -37,17 +37,24 @@ single output, a level-sensitive gate declared with the ``clock`` key
 import PySpice
 
 from charlib.characterizer.procedures import register, ProcedureFailedException
-from charlib.characterizer.procedures.session import Session, fmt, pulse_alter
+from charlib.characterizer.procedures.session import (
+    Session, fmt, edge_alter, pwl_alter)
 from charlib.characterizer.procedures.sequential.testbench import (
     single_data_gate_output, latch_circuit, transparent_high)
 from charlib.liberty import liberty
 from charlib.liberty.library import LookupTable
 
-T0 = 0.5e-9   # start of the data reference ramp
+# Timeline fractions of the active half-period (c_pw), identical to the
+# calibration campaign's values at the default 100 MHz / 0.5 contract:
+# 0.1*c_pw = the campaign's 0.5 ns reference start,
+# 0.4*c_pw = its 2 ns first-pass reference window (grown on failure).
+REF_START = 0.1
+REF_WINDOW = 0.4
 ITERS = 14    # bisection steps: <1 ps everywhere on the official axes
 
 @register('data_slews', 'clock_slews', 'metastability_constraint_load',
-          'setup_pushout_criterion', 'hold_disturbance_depth')
+          'setup_pushout_criterion', 'hold_disturbance_depth',
+          'qualification_frequency', 'qualification_duty_cycle')
 def setup_hold_pushout(cell, config, settings):
     """Find setup & hold constraints by pushout / disturbance bisection"""
     for data_transition in ('01', '10'):
@@ -83,7 +90,9 @@ def measure_constraint_matrix(cell, config, settings, kind, data_transition):
          * settings.units.capacitance
     criterion = config.parameters.get('setup_pushout_criterion', 1.2)
     depth = config.parameters.get('hold_disturbance_depth', 0.1)
-    t_period = 2e-6
+    c_per = 1 / config.parameters['qualification_frequency']
+    c_pw = config.parameters['qualification_duty_cycle'] * c_per
+    t0 = REF_START * c_pw
 
     (v_1, v_2) = (vss, vdd) if d_dir == 'rise' else (vdd, vss)
     # hold: the captured rail is v_1; a disturbance is the output leaving
@@ -96,7 +105,7 @@ def measure_constraint_matrix(cell, config, settings, kind, data_transition):
     points = {}
 
     if not settings.dry_run:
-        circuit = latch_circuit(cell, config, settings, data, gate, out, load, t_period)
+        circuit = latch_circuit(cell, config, settings, data, gate, out, load)
         simulator = PySpice.Simulator.factory(simulator=settings.simulation.backend)
         simulation = simulator.simulation(
             circuit,
@@ -125,44 +134,46 @@ def measure_constraint_matrix(cell, config, settings, kind, data_transition):
                 # transparent with data at the old value, so the DC point is
                 # forced by transparency. t_ref does not depend on the gate
                 # slew: measured once per data slew.
-                session.execute(pulse_alter(f'v{gate.name}', v_transp, v_transp,
-                                            T0, s_d, 1e-6, t_period))
-                session.execute(pulse_alter(f'v{data}', v_1, v_2, T0, s_d, 1e-6, t_period))
+                session.execute(pwl_alter(f'v{gate.name}',
+                                          [(0, v_transp), (t0, v_transp)]))
+                session.execute(edge_alter(f'v{data}', v_1, v_2, t0, s_d))
                 ref_meas = (f'meas tran t_ref trig v(v{data}) val={v50} {d_dir}=1 '
                             f'targ v(v{out}) val={v50} {d_dir}=1')
-                t_win = T0 + s_d + 2e-9
+                t_win = t0 + s_d + REF_WINDOW * c_pw
                 while True:
-                    session.execute(f'tran {fmt(max(s_d/4, 5e-12))} {fmt(t_win)}')
+                    session.execute(f'tran {fmt(max(s_d/4, c_per/2000))} {fmt(t_win)}')
                     t_ref = session.measure('t_ref', ref_meas)
                     session.execute('destroy all')
-                    if t_ref is not None or t_win > 1000*s_d + T0:
+                    if t_ref is not None or t_win > 1000*s_d + t0:
                         break
                     t_win = 2*t_win
                 if t_ref is None:
                     continue # every point of this data slew reported missing below
                 t_step = t_ref/100
-                session.execute(f'tran {fmt(t_step)} {fmt(T0 + s_d + 2.5*t_ref)}')
+                session.execute(f'tran {fmt(t_step)} {fmt(t0 + s_d + 2.5*t_ref)}')
                 t_ref = session.measure('t_ref', ref_meas)
                 session.execute('destroy all')
                 if t_ref is None:
                     continue
-                # close the gate only after the reference has provably settled
-                t_cs = T0 + s_d + 2*t_ref + 0.5e-9
+                # close the gate only after the reference has provably
+                # settled: 2*t_ref past the end of the data ramp is ample
+                # for a pushout criterion of 1.2
+                t_cs = t0 + s_d + 2*t_ref
 
                 for g_slew in g_slews:
                     s_c = float(g_slew * settings.units.time) / (high - low)
                     t_c50 = t_cs + s_c/2
-                    session.execute(pulse_alter(f'v{gate.name}', v_transp, v_opaque,
-                                                t_cs, s_c, 1e-6, t_period))
-                    b_lo = 0.0 if kind == 'setup' else T0
-                    b_hi = t_cs + s_c + 4*t_ref + 1e-9
+                    session.execute(edge_alter(f'v{gate.name}', v_transp, v_opaque,
+                                               t_cs, s_c))
+                    b_lo = 0.0 if kind == 'setup' else t0
+                    b_hi = t_cs + s_c + 4*t_ref
                     if kind == 'setup':
                         # bisect the data edge toward (and past) the closing
                         # edge; a failed probe measurement is a fail verdict
-                        b_prev, b_next, b_td = b_lo, b_hi, T0
+                        b_prev, b_next, b_td = b_lo, b_hi, t0
                         for _ in range(ITERS):
-                            session.execute(pulse_alter(f'v{data}', v_1, v_2,
-                                                        b_td, s_d, 1e-6, t_period))
+                            session.execute(edge_alter(f'v{data}', v_1, v_2,
+                                                       b_td, s_d))
                             session.execute(f'tran {fmt(t_step)} {fmt(b_td + s_d + 3*t_ref)}')
                             m_push = session.measure('m_push',
                                 f'meas tran m_push trig v(v{data}) val={v50} {d_dir}=1 '
@@ -174,8 +185,8 @@ def measure_constraint_matrix(cell, config, settings, kind, data_transition):
                                 b_prev, b_td = b_td, (b_td + b_next)/2
                         # certificate: rerun the last verified-PASSING edge and
                         # read the constraint 50%-to-50%, the Liberty sign
-                        session.execute(pulse_alter(f'v{data}', v_1, v_2,
-                                                    b_prev, s_d, 1e-6, t_period))
+                        session.execute(edge_alter(f'v{data}', v_1, v_2,
+                                                   b_prev, s_d))
                         session.execute(f'tran {fmt(t_step)} {fmt(t_c50 + s_c/2 + 3*t_ref)}')
                         value = session.measure('m_setup',
                             f'meas tran m_setup trig v(v{data}) val={v50} {d_dir}=1 '
@@ -186,8 +197,8 @@ def measure_constraint_matrix(cell, config, settings, kind, data_transition):
                         b_prev, b_next = b_lo, b_hi
                         b_td = (b_prev + b_next)/2
                         for _ in range(ITERS):
-                            session.execute(pulse_alter(f'v{data}', v_1, v_2,
-                                                        b_td, s_d, 1e-6, t_period))
+                            session.execute(edge_alter(f'v{data}', v_1, v_2,
+                                                       b_td, s_d))
                             session.execute(f'tran {fmt(t_step)} {fmt(b_td + s_d + 6*t_ref)}')
                             m_dist = session.measure('m_dist', f'meas tran m_dist {stat} v(v{out})')
                             session.execute('destroy all')
@@ -198,8 +209,8 @@ def measure_constraint_matrix(cell, config, settings, kind, data_transition):
                         # certificate: the last verified-SAFE edge,
                         # unconditionally, with its witness — that alarm should
                         # never fire, and its silence is the proof
-                        session.execute(pulse_alter(f'v{data}', v_1, v_2,
-                                                    b_next, s_d, 1e-6, t_period))
+                        session.execute(edge_alter(f'v{data}', v_1, v_2,
+                                                   b_next, s_d))
                         session.execute(f'tran {fmt(t_step)} {fmt(b_next + s_d + 6*t_ref)}')
                         value = session.measure('m_hold',
                             f'meas tran m_hold trig v(v{gate.name}) val={v50} {closing_dir}=1 '

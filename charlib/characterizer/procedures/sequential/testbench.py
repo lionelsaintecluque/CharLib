@@ -48,9 +48,11 @@ def single_data_gate_output(cell):
     return cell.inputs[0], gate, cell.outputs[0]
 
 
-def latch_circuit(cell, config, settings, data, gate, out, initial_load, period):
-    """Build the one test circuit: PULSE sources on data and gate (parameters
-    swapped by `alter` at every point), the load capacitor on the output."""
+def latch_circuit(cell, config, settings, data, gate, out, initial_load):
+    """Build the one test circuit: an empty DC source on data and gate —
+    the session grafts every waveform by `alter` before every tran, so
+    the netlist honestly reads "driven by the session" — and the load
+    capacitor on the output."""
     vss = settings.primary_ground.voltage * settings.units.voltage
     circuit = utils.init_circuit('seq_matrix', cell.netlist, config.models,
                                  settings.named_nodes, settings.units)
@@ -58,9 +60,7 @@ def latch_circuit(cell, config, settings, data, gate, out, initial_load, period)
     for pin in cell.pins_in_netlist_order():
         if pin.name in (data, gate.name):
             connections.append(f'v{pin.name}')
-            circuit.PulseVoltageSource(pin.name, f'v{pin.name}', circuit.gnd,
-                                       initial_value=vss, pulsed_value=vss,
-                                       pulse_width=1e-6, period=period)
+            circuit.V(pin.name, f'v{pin.name}', circuit.gnd, vss)
         elif pin.name == out:
             connections.append(f'v{pin.name}')
             circuit.C(pin.name, f'v{pin.name}', circuit.gnd, initial_load)

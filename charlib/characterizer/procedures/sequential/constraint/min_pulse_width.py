@@ -25,18 +25,21 @@ import PySpice
 from charlib.characterizer import utils
 from charlib.characterizer.cell import Port
 from charlib.characterizer.procedures import register, ProcedureFailedException
-from charlib.characterizer.procedures.session import Session, fmt, pulse_alter
+from charlib.characterizer.procedures.session import Session, fmt, edge_alter
 from charlib.characterizer.procedures.sequential.testbench import (
     single_data_gate_output, transparent_high)
 from charlib.liberty import liberty
 from charlib.liberty.library import LookupTable
 
-T_START = 0.5e-9
-DATA_RAMP = 0.1e-9
-OPAQUE_SETTLE = 0.2e-9
-PROBE_SETTLE = 0.3e-9
+# Timeline fractions of the transparency the design grants (t_contract),
+# identical to the calibration campaign's values at the default 100 MHz /
+# 0.5 contract: 0.5 ns close, 0.1 ns data ramp, 0.2 ns opaque settle,
+# 0.3 ns probe settle.
+T_START = 0.1
+DATA_RAMP = 0.02
+OPAQUE_SETTLE = 0.04
+PROBE_SETTLE = 0.06
 ITERS = 14
-T_PERIOD = 2e-6
 
 @register('data_slews', 'clock_slews', 'metastability_constraint_load',
           'min_pulse_width_pushout_criterion',
@@ -62,7 +65,7 @@ def _probe_alter(gate_name, v_open_step, t_start, t_ramp, width):
     shrink = min((1 + width/t_ramp) / 2, 1)
     v_peak = v_open_step * shrink
     t_rise = t_ramp * shrink
-    plateau = max(width - t_ramp, 1e-15)
+    plateau = max(width - t_ramp, 1e-15)  # numerical: PWL abscissas must increase
     vertices = ((0, 0), (t_start, 0),
                 (t_start + t_rise, v_peak),
                 (t_start + t_rise + plateau, v_peak),
@@ -80,20 +83,16 @@ def _stacked_gate_circuit(cell, config, settings, data, gate, out, load):
                                  settings.named_nodes, settings.units)
     connections = []
     for pin in cell.pins_in_netlist_order():
+        # empty DC sources: the session grafts every waveform by alter
+        # before every tran, the netlist honestly reads "driven by the
+        # session"
         if pin.name == data:
             connections.append(f'v{pin.name}')
-            circuit.PulseVoltageSource(pin.name, f'v{pin.name}', circuit.gnd,
-                                       initial_value=vss, pulsed_value=vss,
-                                       pulse_width=1e-6, period=T_PERIOD)
+            circuit.V(pin.name, f'v{pin.name}', circuit.gnd, vss)
         elif pin.name == gate.name:
             connections.append(f'v{pin.name}')
-            circuit.PulseVoltageSource(f'{pin.name}A', f'v{pin.name}', 'nprobe',
-                                       initial_value=vss, pulsed_value=vss,
-                                       pulse_width=1e-6, period=T_PERIOD)
-            circuit.PieceWiseLinearVoltageSource(f'{pin.name}B', 'nprobe', circuit.gnd,
-                                                 values=[(0, vss), (1e-9, vss),
-                                                         (2e-9, vss), (3e-9, vss),
-                                                         (4e-9, vss)])
+            circuit.V(f'{pin.name}A', f'v{pin.name}', 'nprobe', vss)
+            circuit.V(f'{pin.name}B', 'nprobe', circuit.gnd, vss)
         elif pin.name == out:
             connections.append(f'v{pin.name}')
             circuit.C(pin.name, f'v{pin.name}', circuit.gnd, load)
@@ -170,9 +169,10 @@ def find_min_pulse_width(cell, config, settings, input_pin):
             session.execute(f'alter c{out} = {fmt(load)}')
             for slew in slews:
                 s_gate = float(slew * settings.units.time) / (high - low)
-                t_close = T_START
-                t_flip = t_close + s_gate + OPAQUE_SETTLE
-                t_probe = t_flip + DATA_RAMP + PROBE_SETTLE
+                d_ramp = DATA_RAMP * t_contract
+                t_close = T_START * t_contract
+                t_flip = t_close + s_gate + OPAQUE_SETTLE * t_contract
+                t_probe = t_flip + d_ramp + PROBE_SETTLE * t_contract
                 w_floor = 0.8 * s_gate
                 w_wide = t_contract
 
@@ -186,14 +186,14 @@ def find_min_pulse_width(cell, config, settings, input_pin):
                     m_delay = (f'meas tran {{name}} trig v(v{gate.name}) val={v50} '
                                f'{open_dir}=1 targ v(v{out}) val={v50} {out_dir}=1')
 
-                    session.execute(pulse_alter(f'v{gate.name}A', v_transp, v_opaque,
-                                                t_close, s_gate, 1e-6, T_PERIOD))
-                    session.execute(pulse_alter(f'v{data}', v_old, v_new,
-                                                t_flip, DATA_RAMP, 1e-6, T_PERIOD))
+                    session.execute(edge_alter(f'v{gate.name}A', v_transp, v_opaque,
+                                               t_close, s_gate))
+                    session.execute(edge_alter(f'v{data}', v_old, v_new,
+                                               t_flip, d_ramp))
                     session.execute(_probe_alter(gate.name, v_open_step,
                                                  t_probe, s_gate, w_wide))
 
-                    t_step = max(s_gate/4, 5e-12)
+                    t_step = max(s_gate/4, t_contract/1000)
                     session.execute(f'tran {fmt(t_step)} {fmt(t_probe + s_gate + t_contract)}')
                     t_ref = session.measure('t_ref', m_delay.format(name='t_ref'))
                     v_cond = session.measure('v_cond',

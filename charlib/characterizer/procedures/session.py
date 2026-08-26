@@ -11,9 +11,28 @@ def fmt(value):
 
 
 def pulse_alter(source, v_1, v_2, t_delay, t_ramp, t_width, t_period):
-    """Build the command altering a PULSE source to the given parameters."""
+    """Build the command altering a PULSE source to the given parameters.
+
+    For genuinely periodic waveforms (clocks) only: a one-shot edge or
+    pulse is a PWL (pwl_alter), not a PULSE with a large period."""
     return (f'alter @{source}[pulse] = [ {fmt(v_1)} {fmt(v_2)} {fmt(t_delay)} '
             f'{fmt(t_ramp)} {fmt(t_ramp)} {fmt(t_width)} {fmt(t_period)} ]')
+
+
+def pwl_alter(source, points):
+    """Build the command altering a source to the given PWL (time, voltage)
+    vertices — the natural form of a waveform that never comes back."""
+    flat = ' '.join(f'{fmt(t)} {fmt(v)}' for (t, v) in points)
+    return f'alter @{source}[pwl] = [ {flat} ]'
+
+
+def edge_alter(source, v_from, v_to, t_edge, t_ramp):
+    """Build the command making a source a single edge: v_from until t_edge,
+    a linear ramp of t_ramp, v_to forever. An edge at t<=0 degenerates to
+    the bare ramp from the origin (PWL abscissas must increase)."""
+    points = [(0, v_from)] if t_edge <= 0 else [(0, v_from), (t_edge, v_from)]
+    points.append((max(t_edge, 0) + t_ramp, v_to))
+    return pwl_alter(source, points)
 
 
 class Session:

@@ -29,20 +29,26 @@ handled yet.
 import PySpice
 
 from charlib.characterizer.procedures import register, ProcedureFailedException
-from charlib.characterizer.procedures.session import Session, fmt, pulse_alter
+from charlib.characterizer.procedures.session import (
+    Session, fmt, pwl_alter, edge_alter)
 from charlib.characterizer.procedures.sequential.testbench import (
     single_data_gate_output, latch_circuit, transparent_high)
 from charlib.liberty import liberty
 from charlib.liberty.library import LookupTable
 
-# First-pass window margin beyond the measured edge: one period of the
-# calibration campaign's 100 MHz qualification contract (grown on
-# failure up to 1000x the applied ramp, the library-wide ceiling).
-T_CONTRACT = 10e-9
+# Timeline fractions of the active half-period (c_pw), identical to the
+# calibration campaign's values at the default 100 MHz / 0.5 contract:
+# 0.2*c_pw = the 1 ns settling between conditioning phases, 0.1*c_pw =
+# the 0.5 ns the skip pulls back before the measured edge. The first-pass
+# window margin is one full contract period, grown on failure up to
+# 1000x the applied ramp (the library-wide ceiling).
+COND_SETTLE = 0.2
+SKIP_BACK = 0.1
 K_PTS = 200   # second-pass resolution: fine tran step = window / K_PTS
 MARG = 0.2    # second-pass margin, in fractions of the detected window
 
-@register('data_slews', 'clock_slews', 'loads', 'transient_sim_end_time')
+@register('data_slews', 'clock_slews', 'loads', 'transient_sim_end_time',
+          'qualification_frequency', 'qualification_duty_cycle')
 def sequential_worst_case(cell, config, settings):
     """Measure sequential transient and propagation delays"""
     for output_transition in ('01', '10'):
@@ -76,14 +82,15 @@ def measure_arc_matrix(cell, config, settings, arc, output_transition):
     high = settings.logic_thresholds.high
     v50 = float(vdd) * 0.5
     t_end_config = config.parameters.get('transient_sim_end_time', 0) * settings.units.time
-    t_period = 2e-6 # both sources pulse once and never come back
+    c_per = 1 / config.parameters['qualification_frequency']
+    c_pw = config.parameters['qualification_duty_cycle'] * c_per
 
     # (load, slew) -> (tpd, transition) in seconds
     points = {}
 
     if not settings.dry_run:
         circuit = latch_circuit(cell, config, settings, data, gate, out,
-                                loads[0]*settings.units.capacitance, t_period)
+                                loads[0]*settings.units.capacitance)
 
         simulator = PySpice.Simulator.factory(simulator=settings.simulation.backend)
         simulation = simulator.simulation(
@@ -109,26 +116,27 @@ def measure_arc_matrix(cell, config, settings, arc, output_transition):
                 # The lib axis is a low-to-high-threshold transition; a linear
                 # PULSE ramp is 0-100 %, hence the division.
                 s = float(slew * settings.units.time) / (high - low)
-                t0 = 1e-9           # conditioning edge (or the transparent D edge)
-                t1 = t0 + s + 1e-9  # data flips while opaque
-                t2 = t1 + s + 1e-9  # the measured opening edge
+                settle = COND_SETTLE * c_pw
+                t0 = settle              # conditioning edge (or the transparent D edge)
+                t1 = t0 + s + settle     # data flips while opaque
+                t2 = t1 + s + settle     # the measured opening edge
                 if arc == 'transparent':
                     (v_from, v_to) = (vss, vdd) if out_dir == 'rise' else (vdd, vss)
-                    session.execute(pulse_alter(f'v{data}', v_from, v_to, t0, s,
-                                                 1e-6, t_period))
-                    session.execute(pulse_alter(f'v{gate.name}', v_transp, v_transp, t0, s,
-                                                 1e-6, t_period))
+                    session.execute(edge_alter(f'v{data}', v_from, v_to, t0, s))
+                    session.execute(pwl_alter(f'v{gate.name}',
+                                              [(0, v_transp), (t0, v_transp)]))
                     in_sig, in_dir = data, out_dir
                     t_skip, t_edge = t0/2, t0
                 else:
                     (v_old, v_new) = (vss, vdd) if out_dir == 'rise' else (vdd, vss)
-                    session.execute(pulse_alter(f'v{data}', v_old, v_new, t1, s,
-                                                 1e-6, t_period))
+                    session.execute(edge_alter(f'v{data}', v_old, v_new, t1, s))
                     # the gate closes at t0 and reopens with the edge under test at t2
-                    session.execute(pulse_alter(f'v{gate.name}', v_transp, v_opaque, t0, s,
-                                                 t2 - t0 - s, t_period))
+                    session.execute(pwl_alter(f'v{gate.name}',
+                                              [(0, v_transp), (t0, v_transp),
+                                               (t0 + s, v_opaque), (t2, v_opaque),
+                                               (t2 + s, v_transp)]))
                     in_sig, in_dir = gate.name, open_dir
-                    t_skip, t_edge = t2 - 0.5e-9, t2
+                    t_skip, t_edge = t2 - SKIP_BACK * c_pw, t2
                 v_lo, v_hi = 0.1*float(vdd), 0.9*float(vdd)
                 v_in_start = v_lo if in_dir == 'rise' else v_hi
                 v_out_end = v_hi if out_dir == 'rise' else v_lo
@@ -137,7 +145,7 @@ def measure_arc_matrix(cell, config, settings, arc, output_transition):
                     session.execute(f'alter c{out} = {fmt(load*settings.units.capacitance)}')
                     # Coarse pass: detect the crossing window at 10/90 %,
                     # ignoring the whole preamble, growing on failure.
-                    margin = max(float(t_end_config), T_CONTRACT)
+                    margin = max(float(t_end_config), c_per)
                     while True:
                         t_end = t_edge + s + margin
                         session.execute(f'tran {fmt(t_end/200)} {fmt(t_end)}')

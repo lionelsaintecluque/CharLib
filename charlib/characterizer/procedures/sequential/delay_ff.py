@@ -22,12 +22,9 @@ from charlib.characterizer.procedures import register, ProcedureFailedException
 from charlib.characterizer.procedures.session import Session, fmt, pulse_alter
 from charlib.characterizer.procedures.sequential.testbench import flop_pins
 from charlib.characterizer.procedures.sequential.constraint.pushout_ff import (
-    R_MPW, R_RAMP, D_COND_FRACTION, D_DROP_FRACTION, T_BLIND_FRACTION,
-    COARSE_STEP_FLOOR)
+    R_MPW, R_RAMP, D_COND_FRACTION, D_DROP_FRACTION, T_BLIND_FRACTION)
 from charlib.liberty import liberty
 from charlib.liberty.library import LookupTable
-
-T_PERIOD = 2e-6
 
 # ============================== CONSTANTES NUES =============================
 # Fractions de la campagne dfrbp, meme statut que les bannieres de
@@ -71,10 +68,8 @@ def _ff_pins(cell):
     return data, clock, reset, outs
 
 
-def _circuit(cell, config, settings, data, clock, reset, outs, n_data_pwl):
+def _circuit(cell, config, settings, data, clock, reset, outs):
     vss = settings.primary_ground.voltage * settings.units.voltage
-    vdd = settings.primary_power.voltage * settings.units.voltage
-    v_rst_active = vss if reset.inversion else vdd
     load0 = config.parameters['loads'][0] * settings.units.capacitance
     circuit = utils.init_circuit('ff_delay', cell.netlist, config.models,
                                  settings.named_nodes, settings.units)
@@ -91,16 +86,11 @@ def _circuit(cell, config, settings, data, clock, reset, outs, n_data_pwl):
                 connections.append(settings.pwell.name)
             case _:
                 connections.append(f'v{pin.name}')
-                if pin.name == data:
-                    circuit.PieceWiseLinearVoltageSource(pin.name, f'v{pin.name}',
-                        circuit.gnd, values=[(k*1e-9, vss) for k in range(n_data_pwl)])
-                elif pin.name == clock.name:
-                    circuit.PulseVoltageSource(pin.name, f'v{pin.name}', circuit.gnd,
-                                               initial_value=vss, pulsed_value=vss,
-                                               pulse_width=1e-6, period=T_PERIOD)
-                elif pin.name == reset.name:
-                    circuit.PieceWiseLinearVoltageSource(pin.name, f'v{pin.name}',
-                        circuit.gnd, values=[(k*1e-9, v_rst_active) for k in range(5)])
+                # empty DC sources: the session grafts every waveform by
+                # alter before every tran, the netlist honestly reads
+                # "driven by the session"
+                if pin.name in (data, clock.name, reset.name):
+                    circuit.V(pin.name, f'v{pin.name}', circuit.gnd, vss)
                 elif pin.name in outs:
                     circuit.C(pin.name, f'v{pin.name}', circuit.gnd, load0)
     circuit.X('dut', cell.name, *connections)
@@ -186,27 +176,28 @@ def measure_capture_matrix(cell, config, settings, output_transition):
 
     samples = {}
     if not settings.dry_run:
-        circuit = _circuit(cell, config, settings, data, clock, reset, outs,
-                           n_data_pwl=5 if two_cycle else 3)
+        circuit = _circuit(cell, config, settings, data, clock, reset, outs)
         session = None
         try:
             session = _session_for(cell, config, settings, circuit,
                                    f'capture_{dirs[0]}')
             session.execute(_pwl_alter(f'v{reset.name}',
-                [(0, v_rst_active), (R_MPW, v_rst_active), (R_MPW + R_RAMP, v_rst_off),
-                 (R_MPW + R_RAMP + 1e-12, v_rst_off), (R_MPW + R_RAMP + 2e-12, v_rst_off)]))
+                [(0, v_rst_active), (R_MPW, v_rst_active), (R_MPW + R_RAMP, v_rst_off)]))
             blind_arg = f' {fmt(t_blind)}' if two_cycle else ''
             edge_base = (c_per if two_cycle else 0) + c_pw
+            # the campaign's D_FAST: D only carries service edges here, at
+            # the fastest axis slew, so the stored value is established
+            # well before the clock edge whatever the measured slew is
+            d_fast = float(min(slews) * settings.units.time) / (high - low)
             for slew in slews:
                 s_c = float(slew * settings.units.time) / (high - low)
                 edge_t = edge_base + s_c/2
                 session.execute(pulse_alter(f'v{clock.name}', vss, vdd,
                                             c_pw, s_c, c_pw, c_per))
                 if two_cycle:
-                    s_d = s_c
                     session.execute(_pwl_alter(f'v{data}',
-                        [(0, vss), (d_cond, vss), (d_cond + s_d, vdd),
-                         (d_drop, vdd), (d_drop + s_d, vss)]))
+                        [(0, vss), (d_cond, vss), (d_cond + d_fast, vdd),
+                         (d_drop, vdd), (d_drop + d_fast, vss)]))
                 else:
                     session.execute(_pwl_alter(f'v{data}',
                         [(0, vdd), (1e-9, vdd), (2e-9, vdd)]))
@@ -219,7 +210,7 @@ def measure_capture_matrix(cell, config, settings, output_transition):
                 for out in outs:
                     session.execute(f'alter c{out} = '
                                     f'{fmt(max(loads)*settings.units.capacitance)}')
-                t_step = max(s_c/4, COARSE_STEP_FLOOR)
+                t_step = max(s_c/4, c_per/1000)
                 t_win = edge_t + s_c/2 + REF_WIN*c_pw
                 session.execute(f'tran {fmt(t_step)} {fmt(t_win)}{blind_arg}')
                 t_ref = session.measure('t_ref', m_ref)
@@ -287,13 +278,12 @@ def measure_assertion_matrix(cell, config, settings):
 
     samples = {}
     if not settings.dry_run:
-        circuit = _circuit(cell, config, settings, data, clock, reset, outs,
-                           n_data_pwl=3)
+        circuit = _circuit(cell, config, settings, data, clock, reset, outs)
         session = None
         try:
             session = _session_for(cell, config, settings, circuit, 'assertion')
             session.execute(_pwl_alter(f'v{data}',
-                [(0, d_level), (1e-9, d_level), (2e-9, d_level)]))
+                [(0, d_level), (c_per, d_level)]))
             for a_slew in a_slews:
                 s_r = float(a_slew * settings.units.time) / (high - low)
                 session.execute(_pwl_alter(f'v{reset.name}',
@@ -311,7 +301,7 @@ def measure_assertion_matrix(cell, config, settings):
                 for out in outs:
                     session.execute(f'alter c{out} = '
                                     f'{fmt(max(loads)*settings.units.capacitance)}')
-                t_step = max(s_r/4, COARSE_STEP_FLOOR)
+                t_step = max(s_r/4, c_per/1000)
                 t_win = t_assert + s_r + REF_WIN*c_pw
                 session.execute(f'tran {fmt(t_step)} {fmt(t_win)}')
                 t_ref = session.measure('t_ref', m_ref)

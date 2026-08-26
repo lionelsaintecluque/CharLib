@@ -51,14 +51,13 @@ D_COND_FRACTION = 0.25
 D_DROP_FRACTION = 1.25
 T_BLIND_FRACTION = 1.2
 
-# ============================== CONSTANTES NUES =============================
+# ========================== FRACTIONS DU CONTRAT ============================
 # Bornes de bissection et fenetres grossieres, en fractions de la demi-
-# periode active (C_PW), plus le plancher du pas grossier (10 ps).
-# Valeurs de la campagne dfrbp : elles encadrent le front actif assez
-# largement pour atteindre les contraintes negatives officielles, sans
-# justification plus profonde que la calibration qui les a validees.
+# periode active (C_PW). Valeurs de la campagne dfrbp : elles encadrent le
+# front actif assez largement pour atteindre les contraintes negatives
+# officielles, sans justification plus profonde que la calibration qui les
+# a validees. Le plancher du pas grossier derive : c_per/1000.
 # ============================================================================
-COARSE_STEP_FLOOR = 10e-12
 SETUP_LO_AFTER_RESET = 0.04   # borne basse (cycle 1) : juste apres le reset
 SETUP_LO_AFTER_BLIND = 0.2    # borne basse (deux-cycles) : apres la fenetre
 SETUP_HI = 0.3                # borne haute au-dela du front actif
@@ -116,6 +115,10 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
     d_cond = D_COND_FRACTION * c_per
     d_drop = D_DROP_FRACTION * c_per
     t_blind = T_BLIND_FRACTION * c_per if two_cycle else 0
+    # the campaign's D_FAST: conditioning edges are service edges, they
+    # carry the fastest axis slew so the stored value is established well
+    # before the clock edge whatever the probed slew is
+    d_fast = float(min(d_slews) * settings.units.time) / (high - low)
 
     v_rst_active = vss if reset.inversion else vdd
     v_rst_off = vdd if reset.inversion else vss
@@ -129,12 +132,14 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
     threshold = depth*float(vdd) if stat == 'max' else (1 - depth)*float(vdd)
     disturbed = (lambda v: v > threshold) if stat == 'max' else (lambda v: v < threshold)
 
-    def d_points(s_d, td, t1):
+    def d_points(td, t1):
+        """The data wave: conditioning edges at d_fast, the probed edge at
+        (td, t1) — the only edge that carries the axis slew."""
         if kind == 'hold' and two_cycle:
-            return [(0, vss), (d_cond, vss), (d_cond + s_d, vdd),
-                    (d_drop, vdd), (d_drop + s_d, vss), (td, vss), (t1, vdd)]
+            return [(0, vss), (d_cond, vss), (d_cond + d_fast, vdd),
+                    (d_drop, vdd), (d_drop + d_fast, vss), (td, vss), (t1, vdd)]
         if two_cycle or kind == 'hold':
-            return [(0, vss), (d_cond, vss), (d_cond + s_d, vdd), (td, vdd), (t1, vss)]
+            return [(0, vss), (d_cond, vss), (d_cond + d_fast, vdd), (td, vdd), (t1, vss)]
         return [(0, vss), (td, vss), (t1, vdd)]
 
     points = {}
@@ -142,7 +147,6 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
     if not settings.dry_run:
         circuit = utils.init_circuit('ff_constraint', cell.netlist, config.models,
                                      settings.named_nodes, settings.units)
-        n_pwl = len(d_points(1e-9, 2e-9, 3e-9))
         connections = []
         for pin in cell.pins_in_netlist_order():
             match pin.role:
@@ -156,13 +160,12 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
                     connections.append(settings.pwell.name)
                 case _:
                     connections.append(f'v{pin.name}')
-                    if pin.name == data:
-                        circuit.PieceWiseLinearVoltageSource(pin.name, f'v{pin.name}',
-                            circuit.gnd, values=[(k*1e-9, vss) for k in range(n_pwl)])
-                    elif pin.name == clock.name:
-                        circuit.PulseVoltageSource(pin.name, f'v{pin.name}', circuit.gnd,
-                                                   initial_value=vss, pulsed_value=vss,
-                                                   pulse_width=1e-6, period=2e-6)
+                    # data and clock are empty DC sources: the session
+                    # grafts every waveform by alter before every tran.
+                    # The reset wave is real: the conditioning pulse,
+                    # re-armed at t=0 of every transient.
+                    if pin.name in (data, clock.name):
+                        circuit.V(pin.name, f'v{pin.name}', circuit.gnd, vss)
                     elif pin.name == reset.name:
                         circuit.PieceWiseLinearVoltageSource(pin.name, f'v{pin.name}',
                             circuit.gnd, values=[(0, v_rst_active), (R_MPW, v_rst_active),
@@ -203,11 +206,17 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
                     s_d = float(d_slew * settings.units.time) / (high - low)
 
                     ref_win = SETUP_REF_WIN if kind == 'setup' else HOLD_REF_WIN
-                    ref_td = (d_drop if two_cycle else d_cond) if kind == 'setup' \
-                        else edge_t + s_c/2 + 0.6*c_pw
-                    session.execute(_pwl_alter(f'v{data}',
-                                    d_points(s_d, ref_td, ref_td + s_d)))
-                    t_step = max(s_c/4, COARSE_STEP_FLOOR)
+                    if kind == 'setup' and not two_cycle:
+                        # the deck's reference: no data edge at all, D
+                        # pinned at the rail (V_PULSE[DC] in 2_MEASURE_FF_1)
+                        session.execute(_pwl_alter(f'v{data}',
+                                        [(0, vdd), (c_per, vdd)]))
+                    else:
+                        ref_td = d_drop if kind == 'setup' \
+                            else edge_t + s_c/2 + 0.6*c_pw
+                        session.execute(_pwl_alter(f'v{data}',
+                                        d_points(ref_td, ref_td + s_d)))
+                    t_step = max(s_c/4, c_per/1000)
                     t_win = edge_t + s_c/2 + ref_win*c_pw
                     session.execute(f'tran {fmt(t_step)} {fmt(t_win)}{blind_arg}')
                     t_ref = session.measure('t_ref', m_ref)
@@ -229,7 +238,7 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
                         b_fail, b_pass, b_td = b_hi, b_lo, (b_lo + b_hi)/2
                         for _ in range(ITERS):
                             session.execute(_pwl_alter(f'v{data}',
-                                            d_points(s_d, b_td, b_td + s_d)))
+                                            d_points(b_td, b_td + s_d)))
                             session.execute(f'tran {fmt(t_step)} {fmt(t_win)}{blind_arg}')
                             m_push = session.measure('m_push',
                                 m_ref.replace('t_ref', 'm_push'))
@@ -241,7 +250,7 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
                                 b_pass = b_td
                                 b_td = (b_td + b_fail)/2
                         session.execute(_pwl_alter(f'v{data}',
-                                        d_points(s_d, b_pass, b_pass + s_d)))
+                                        d_points(b_pass, b_pass + s_d)))
                         session.execute(f'tran {fmt(t_step)} {fmt(t_win)}{blind_arg}')
                         value = session.measure('m_setup',
                             f'meas tran m_setup trig v(v{data}) val={v50} {d_edge}=1 '
@@ -263,7 +272,7 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
                         # non-monotonic PWL that ngspice rejects. Clamp the
                         # bisection window once, with a strict guard so no
                         # two PWL vertices share an abscissa.
-                        d_end = (d_drop if two_cycle else d_cond) + s_d
+                        d_end = (d_drop if two_cycle else d_cond) + d_fast
                         b_lo = min(max(b_lo, d_end + t_step), b_hi - t_step)
                         b_prev, b_next, b_td = b_lo, b_hi, (b_lo + b_hi)/2
                         domain_clamped = b_lo > edge_t - s_c/2 - HOLD_LO*c_pw
@@ -271,7 +280,7 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
                                       f'from={fmt(t_from)} to={fmt(t_dl)}')
                         for _ in range(ITERS):
                             session.execute(_pwl_alter(f'v{data}',
-                                            d_points(s_d, b_td, b_td + s_d)))
+                                            d_points(b_td, b_td + s_d)))
                             session.execute(f'tran {fmt(t_step)} {fmt(t_win)}{blind_arg}')
                             m_push = session.measure('m_push',
                                 m_ref.replace('t_ref', 'm_push'))
@@ -288,7 +297,7 @@ def measure_ff_constraint_matrix(cell, config, settings, kind, data_transition):
                             # can probe — a missing point, never a value
                             continue
                         session.execute(_pwl_alter(f'v{data}',
-                                        d_points(s_d, b_next, b_next + s_d)))
+                                        d_points(b_next, b_next + s_d)))
                         session.execute(f'tran {fmt(t_step)} {fmt(t_win)}{blind_arg}')
                         value = session.measure('m_hold',
                             f'meas tran m_hold trig v(v{clock.name}) val={v50} rise=1 '

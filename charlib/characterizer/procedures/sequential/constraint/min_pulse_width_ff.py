@@ -20,8 +20,8 @@ run doubles as the certificate. Saturation at the contract-wide end is
 a failure, not a value.
 
 Criterion ratified full-grid at the house-wide x1.2 (per-family
-elections within a few ps of it). EXPERIMENTAL as long as hard
-temporal constants remain in this file (see the banners).
+elections within a few ps of it). Every window derives from the
+qualification contract (see the banners); guards derive from the step.
 """
 
 import PySpice
@@ -29,13 +29,12 @@ import PySpice
 from charlib.characterizer import utils
 from charlib.characterizer.cell import Port
 from charlib.characterizer.procedures import register, ProcedureFailedException
-from charlib.characterizer.procedures.session import Session, fmt, pulse_alter
+from charlib.characterizer.procedures.session import Session, fmt
 from charlib.characterizer.procedures.sequential.testbench import flop_pins
 from charlib.liberty import liberty
 from charlib.liberty.library import LookupTable
 
 ITERS = 14
-T_PERIOD = 2e-6
 
 # ============================== CONSTANTES NUES =============================
 # Chronologie en fractions du contrat (c_pw = demi-periode active) :
@@ -45,8 +44,9 @@ T_PERIOD = 2e-6
 #   1.0         ecartement des fronts fixes (pulse de conditionnement, gap)
 #   0.5         ouverture de la fenetre sauvee (aveuglement) ; marge du banc
 #   0.4 / 0.2   banc reset : position du pulse d'horloge, retrait du blind
-#   2 ps        garde de saturation au bout contractuel de la bissection
 # Fractions de la campagne dfrbp, memes statuts que les autres bannieres.
+# Les gardes derivent : saturation = 2 pas fins, plancher du pas grossier
+# = c_per/1000.
 # ============================================================================
 RST_RELEASE_START = 0.1
 RST_RELEASE_END = 0.2
@@ -56,8 +56,6 @@ FIXED_GAP = 1.0
 BLIND_OFFSET = 0.5
 RST_CLK_AT = 0.4
 RST_BLIND_BACK = 0.2
-SATURATION_GUARD = 2e-12
-COARSE_STEP_FLOOR = 10e-12
 
 
 @register('data_slews', 'clock_slews', 'metastability_constraint_load',
@@ -140,8 +138,6 @@ def measure_mpw_ff(cell, config, settings, family):
     if not settings.dry_run:
         circuit = utils.init_circuit('ff_mpw', cell.netlist, config.models,
                                      settings.named_nodes, settings.units)
-        n_ck = {'clk_high': 9, 'clk_low': 7, 'async': 5}[family]
-        n_rst = 7 if family == 'async' else 3
         connections = []
         for pin in cell.pins_in_netlist_order():
             match pin.role:
@@ -155,16 +151,11 @@ def measure_mpw_ff(cell, config, settings, family):
                     connections.append(settings.pwell.name)
                 case _:
                     connections.append(f'v{pin.name}')
-                    if pin.name == data:
-                        circuit.PieceWiseLinearVoltageSource(pin.name, f'v{pin.name}',
-                            circuit.gnd, values=[(k*1e-9, vss) for k in range(3)])
-                    elif pin.name == clock.name:
-                        circuit.PieceWiseLinearVoltageSource(pin.name, f'v{pin.name}',
-                            circuit.gnd, values=[(k*1e-9, vss) for k in range(n_ck)])
-                    elif pin.name == reset.name:
-                        circuit.PieceWiseLinearVoltageSource(pin.name, f'v{pin.name}',
-                            circuit.gnd,
-                            values=[(k*1e-9, v_rst_active) for k in range(n_rst)])
+                    # empty DC sources: the session grafts every waveform by
+                    # alter before every tran, the netlist honestly reads
+                    # "driven by the session"
+                    if pin.name in (data, clock.name, reset.name):
+                        circuit.V(pin.name, f'v{pin.name}', circuit.gnd, vss)
                     elif pin.name == out:
                         circuit.C(pin.name, f'v{pin.name}', circuit.gnd, load)
         circuit.X('dut', cell.name, *connections)
@@ -278,7 +269,7 @@ def measure_mpw_ff(cell, config, settings, family):
                     blind_arg = f' {fmt(t_blind)}' if t_blind else ''
 
                     session.execute(probe(w_ref))
-                    t_step = max(ramp/4, COARSE_STEP_FLOOR)
+                    t_step = max(ramp/4, c_per/1000)
                     t_win = arc50 + w_ref + BLIND_OFFSET*c_pw
                     session.execute(f'tran {fmt(t_step)} {fmt(t_win)}{blind_arg}')
                     t_ref = session.measure('t_ref', m_ref)
@@ -324,7 +315,9 @@ def measure_mpw_ff(cell, config, settings, family):
                             else:
                                 w_fail = width
                                 width = (width + w_pass)/2
-                        if w_pass > w_ref - SATURATION_GUARD:
+                        # saturation on the contract bound: the pin cannot
+                        # settle inside w_ref — disqualify, don't publish
+                        if w_pass > w_ref - 2*t_step:
                             continue
                         if not probe_verdict(w_pass):
                             session.execute('destroy all')
