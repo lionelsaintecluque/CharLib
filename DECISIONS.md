@@ -29,7 +29,7 @@ project-level choices.
 - **Honest netlists**: session-driven sources are built as empty DC
   sources; the only waveform a netlist shows is one actually
   simulated (the reset conditioning pulse).
-- **Measurement DB interchange** (adopted, to implement): one plain
+- **Measurement DB interchange** (adopted, implemented): one plain
   Tcl-array file per cell per corner
   (`set DB(<pin>:<related>:<timing_type>:<lut>,<axis1>[,<axis2>]) <SI value>`),
   axes in lib units self-enumerating, provenance in `#` header,

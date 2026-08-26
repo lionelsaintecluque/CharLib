@@ -27,13 +27,12 @@ choice is made, and to code when it is ratified.
 
 ## Infrastructure
 
-- **Measurement DB import/export** (decided, see DECISIONS): per-cell
-  DB files as drop-in replacement for procedures; incremental dump as
-  crash checkpoint; standalone db -> liberty command. Enables split
-  workflows: another tool measures some cells (or the most demanding
-  arcs), CharLib assembles and writes the library.
 - **Resume**: on restart, skip measurements whose keys already exist
-  in the dumped DB.
+  in the dumped DB (the dump side is in place; the skip side is not).
+- **Measurement DB format addenda** (spec first, then code): the
+  `clear`/`preset` assertion timing_types (delay-shaped tables,
+  currently skipped by the dump), and leakage/power keys including
+  `when` states.
 - **Warn on dropped/unused yml keys**: the silent whitelist filter
   (see KNOWN-BUGS) should log what it rejects, and the run should
   report declared-but-never-read keys.
