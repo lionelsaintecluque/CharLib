@@ -148,6 +148,18 @@ def build_from_measurements(cell, config, settings):
             caps.setdefault(pin, {}).setdefault(lut_name, []).extend(points.values())
             continue
         if ttype in DELAY_TYPES or ttype in ASSERT_TYPES:
+            if ttype in ASSERT_TYPES:
+                # the per-output labelling rule implies the pairing:
+                # a clear arc falls, a preset arc rises
+                direction = 'fall' if ttype == 'clear' else 'rise'
+                if not lut_name.startswith(('cell_', f'{direction}_')) \
+                   or (lut_name.startswith('cell_') and lut_name != f'cell_{direction}'):
+                    raise ValueError(
+                        f'{paths}: {pin}:{related}:{ttype}:{lut_name} — a '
+                        f'{ttype} arc must carry cell_{direction}/'
+                        f'{direction}_transition tables (the label is per '
+                        'output: the same dominant is clear for the output '
+                        'it drops and preset for the one it raises)')
             # axes: (input slew, output load)
             slews = sorted({float(a[0]) for a in points})
             loads = sorted({float(a[1]) for a in points})
