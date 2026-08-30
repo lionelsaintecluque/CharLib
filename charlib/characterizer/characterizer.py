@@ -205,7 +205,7 @@ class CharacterizationSettings:
             'time_unit': spice_unit(self.units.time),
             'voltage_unit': spice_unit(self.units.voltage),
             'current_unit': spice_unit(self.units.current),
-            'pulling_resistance_unit': spice_unit(self.units.current),
+            'pulling_resistance_unit': spice_unit(self.units.resistance),
             'leakage_power_unit': spice_unit(self.units.power),
             'capacitive_load_unit': [1, self.units.capacitance.prefixed_unit.str_spice()],
             'slew_upper_threshold_pct_rise': self.logic_thresholds.high,

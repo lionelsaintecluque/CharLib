@@ -34,7 +34,7 @@ class Library(liberty.Group):
         self.file_name = attrs.pop('filename', f'{name}.lib')
         self.add_attribute('technology', 'cmos')
         self.add_attribute('delay_model', 'table_lookup')
-        self.add_attribute('bus_naming_style', '%s-%d')
+        self.add_attribute('bus_naming_style', '%s[%d]')
 
         # Add nominal operating conditions
         self.add_attribute('nom_process', 1.0, 2)

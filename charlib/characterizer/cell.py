@@ -207,7 +207,13 @@ class Cell:
                 pin_group = liberty.Group('pin', pin.name)
                 pin_group.add_attribute('direction', pin.direction)
                 if pin.direction is Port.Direction.OUT:
-                    pin_group.add_attribute('function', str(self.functions[pin.name]))
+                    # liberty wants an expression, not an assignment: a
+                    # sequential output references its storage variable,
+                    # a combinational one its boolean expression
+                    state_var = states.get(pin.name)
+                    pin_group.add_attribute(
+                        'function',
+                        state_var if state_var else self.functions[pin.name].expression)
                 elif pin.role == Port.Role.CLOCK:
                     pin_group.add_attribute('clock', "true")
             self.liberty.add_group(pin_group)
