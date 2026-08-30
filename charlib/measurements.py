@@ -14,7 +14,8 @@ Entry::
 - ``timing_type``: liberty timing_type (``rising_edge``,
   ``falling_edge``, ``setup_rising``, ``hold_rising``,
   ``recovery_rising``, ``removal_rising``, ``min_pulse_width``, and
-  their falling counterparts) or the quantity family (``capacitance``)
+  their falling counterparts; ``clear``/``preset`` for asynchronous
+  dominants) or the quantity family (``capacitance``)
 - ``lut``: the liberty table (``cell_rise``, ``rise_transition``,
   ``rise_constraint``, ...) or the direction (``rise``/``fall`` for
   capacitance)
@@ -22,6 +23,12 @@ Entry::
   delays/transitions (input slew, output load); constraints
   (related-pin slew, constrained-pin slew); min_pulse_width
   (slew, ``-``); capacitance (slew, companion-state combo)
+
+Asynchronous dominants (``clear``/``preset``): delay-shaped tables on
+the OUTPUT pin, related = the dominant pin, slew = the dominant's
+ASSERTION edge. The label is per output: the same active-low RESET_B
+is ``clear`` for Q and ``preset`` for Q_N. ``timing_sense`` stays out
+of the DB: the consumer derives it from its own cell declaration.
 - value: raw SI (seconds, farads). Unit conversion happens here, at
   the reader's boundary.
 
@@ -42,6 +49,7 @@ from pathlib import Path
 _ENTRY_RE = re.compile(r'^\s*set\s+DB\(([^)]+)\)\s+(\S+)\s*$')
 
 DELAY_TYPES = frozenset(('rising_edge', 'falling_edge'))
+ASSERT_TYPES = frozenset(('clear', 'preset'))
 CONSTRAINT_TYPES = frozenset(
     f'{kind}_{edge}' for kind in ('setup', 'hold', 'recovery', 'removal')
     for edge in ('rising', 'falling'))
@@ -139,7 +147,7 @@ def build_from_measurements(cell, config, settings):
         if ttype == CAP_TYPE:
             caps.setdefault(pin, {}).setdefault(lut_name, []).extend(points.values())
             continue
-        if ttype in DELAY_TYPES:
+        if ttype in DELAY_TYPES or ttype in ASSERT_TYPES:
             # axes: (input slew, output load)
             slews = sorted({float(a[0]) for a in points})
             loads = sorted({float(a[1]) for a in points})
@@ -179,6 +187,9 @@ def build_from_measurements(cell, config, settings):
         timing_group.add_attribute('related_pin', pin if related == '-' else related)
         if ttype in DELAY_TYPES:
             timing_group.add_attribute('timing_sense', 'non_unate')
+        elif ttype in ASSERT_TYPES:
+            timing_group.add_attribute(
+                'timing_sense', _assert_sense(cell, related, ttype, paths))
         timing_group.add_attribute('timing_type', ttype)
         for lut in sorted(luts, key=lambda l: l.name):
             timing_group.add_group(lut)
@@ -194,6 +205,24 @@ def build_from_measurements(cell, config, settings):
         pin_group.add_attribute('capacitance', to_cap(max(worst.values())))
 
     return result
+
+
+def _assert_sense(cell, related, ttype, paths):
+    """timing_sense of a clear/preset arc, derived from the cell
+    declaration (the DB does not carry it): positive_unate on the
+    output that follows the dominant's assertion edge."""
+    dominant = None
+    for candidate in (cell.clear, cell.preset):
+        if candidate is not None and candidate.name == related:
+            dominant = candidate
+    if dominant is None:
+        raise ValueError(
+            f'{paths}: {ttype} tables relate to pin "{related}" but the cell '
+            'declaration names no such set/reset pin; timing_sense cannot be '
+            'derived')
+    assert_dir = 'fall' if dominant.inversion else 'rise'
+    out_dir = 'fall' if ttype == 'clear' else 'rise'
+    return 'positive_unate' if out_dir == assert_dir else 'negative_unate'
 
 
 def dump_cell_group(cell_group, db_path, settings, header=()):
@@ -250,8 +279,9 @@ def _lut_entries(lut, ttype, scale):
         return f'{value:g}'
 
     variables = list(lut.template.variables.keys())
-    if ttype in DELAY_TYPES and variables == ['total_output_net_capacitance',
-                                              'input_net_transition']:
+    if (ttype in DELAY_TYPES or ttype in ASSERT_TYPES) \
+       and variables == ['total_output_net_capacitance',
+                         'input_net_transition']:
         loads, slews = lut.index_values
         return [((label(slew), label(load)), float(lut[load, slew]) / scale)
                 for load, slew in itertools.product(loads, slews)]
