@@ -23,6 +23,12 @@ Entry::
   delays/transitions (input slew, output load); constraints
   (related-pin slew, constrained-pin slew); min_pulse_width
   (slew, ``-``); capacitance (slew, companion-state combo)
+- ``cond``: optional 5th ``:``-field naming the companion conditioning
+  the arc was measured under (``GATE1``, ``D0``, ``SCE0SCD1``) — the
+  liberty ``when`` in embryo. Applies to the delay families,
+  ``min_pulse_width`` (whose keys keep related ``-`` and a ``-``
+  second axis regardless) and ``capacitance``; never to constraints.
+  This consumer folds conditioned entries worst-case.
 
 Asynchronous dominants (``clear``/``preset``): delay-shaped tables on
 the OUTPUT pin, related = the dominant pin, slew = the dominant's
@@ -48,13 +54,16 @@ from pathlib import Path
 
 _ENTRY_RE = re.compile(r'^\s*set\s+DB\(([^)]+)\)\s+(\S+)\s*$')
 
-DELAY_TYPES = frozenset(('rising_edge', 'falling_edge'))
+DELAY_TYPES = frozenset(('combinational', 'rising_edge', 'falling_edge'))
 ASSERT_TYPES = frozenset(('clear', 'preset'))
 CONSTRAINT_TYPES = frozenset(
     f'{kind}_{edge}' for kind in ('setup', 'hold', 'recovery', 'removal')
     for edge in ('rising', 'falling'))
 MPW_TYPE = 'min_pulse_width'
 CAP_TYPE = 'capacitance'
+# families that may carry the optional conditioning field (the liberty
+# `when` in embryo); constraint conditioning is the scenario's business
+CONDITIONABLE = DELAY_TYPES | {MPW_TYPE, CAP_TYPE}
 
 
 class MeasurementDB:
@@ -81,13 +90,28 @@ class MeasurementDB:
                     raise ValueError(f'{path}: unparseable entry: {line.rstrip()}')
                 head, *axes = (field.strip() for field in match.group(1).split(','))
                 fields = head.split(':')
-                if len(fields) != 4 or not axes:
+                if len(fields) == 4:
+                    cond = ''
+                elif len(fields) == 5:
+                    cond = fields[4]
+                    if fields[2] not in CONDITIONABLE or not cond:
+                        raise ValueError(
+                            f'{path}: the conditioning field only applies to '
+                            f'{sorted(CONDITIONABLE)}: {match.group(1)}')
+                else:
                     raise ValueError(f'{path}: malformed key: {match.group(1)}')
-                db.entries[(*fields, tuple(axes))] = float(match.group(2))
+                if fields[2] == MPW_TYPE and \
+                   (fields[1] != '-' or len(axes) != 2 or axes[1] != '-'):
+                    raise ValueError(
+                        f'{path}: min_pulse_width keys keep related = - and a '
+                        f'- second axis whatever the conditioning: {match.group(1)}')
+                if not axes:
+                    raise ValueError(f'{path}: malformed key: {match.group(1)}')
+                db.entries[(*fields[:4], cond, tuple(axes))] = float(match.group(2))
         return db
 
-    def set(self, pin, related, timing_type, lut, axes, value):
-        self.entries[(pin, related, timing_type, lut,
+    def set(self, pin, related, timing_type, lut, axes, value, cond=''):
+        self.entries[(pin, related, timing_type, lut, cond,
                       tuple(str(a) for a in axes))] = value
 
     def merge(self, other):
@@ -100,18 +124,21 @@ class MeasurementDB:
         """Whole sorted rewrite, atomic: a crash never corrupts the file."""
         path = Path(path)
         lines = list(self.header)
-        for (pin, related, ttype, lut, axes), value in sorted(self.entries.items()):
-            key = f'{pin}:{related}:{ttype}:{lut},{",".join(axes)}'
-            lines.append(f'set DB({key}) {value:.6E}')
+        for (pin, related, ttype, lut, cond, axes), value in sorted(self.entries.items()):
+            head = f'{pin}:{related}:{ttype}:{lut}' + (f':{cond}' if cond else '')
+            lines.append(f'set DB({head},{",".join(axes)}) {value:.6E}')
         tmp = path.with_suffix(path.suffix + '.tmp')
         tmp.write_text('\n'.join(lines) + '\n', encoding='utf-8')
         tmp.replace(path)
 
     def tables(self):
-        """Group entries: (pin, related, timing_type, lut) -> {axes: value}."""
+        """Group entries: (pin, related, timing_type, lut) -> {axes: value},
+        folding conditioned entries worst-case (the db keeps what was
+        measured; the liberty consumer publishes the pessimistic table)."""
         grouped = {}
-        for (pin, related, ttype, lut, axes), value in self.entries.items():
-            grouped.setdefault((pin, related, ttype, lut), {})[axes] = value
+        for (pin, related, ttype, lut, cond, axes), value in self.entries.items():
+            table = grouped.setdefault((pin, related, ttype, lut), {})
+            table[axes] = max(table[axes], value) if axes in table else value
         return grouped
 
 
@@ -197,7 +224,10 @@ def build_from_measurements(cell, config, settings):
         # min_pulse_width tables carry no reference pin in the DB but
         # liberty wants related_pin: it is the constrained pin itself
         timing_group.add_attribute('related_pin', pin if related == '-' else related)
-        if ttype in DELAY_TYPES:
+        if ttype == 'combinational':
+            timing_group.add_attribute(
+                'timing_sense', _combinational_sense(cell, pin, related))
+        elif ttype in DELAY_TYPES:
             timing_group.add_attribute('timing_sense', 'non_unate')
         elif ttype in ASSERT_TYPES:
             timing_group.add_attribute(
@@ -217,6 +247,29 @@ def build_from_measurements(cell, config, settings):
         pin_group.add_attribute('capacitance', to_cap(max(worst.values())))
 
     return result
+
+
+def _combinational_sense(cell, pin, related):
+    """timing_sense of a combinational arc, derived from the declared
+    function of the output (the db does not carry it): sweep the other
+    operands, watch the output's monotonicity in the related pin."""
+    function = cell.functions.get(pin)
+    if function is None or related not in function.operands:
+        return 'non_unate'
+    others = [name for name in function.operands if name != related]
+    rises = falls = False
+    for n in range(2 ** len(others)):
+        base = dict(zip(others, (int(c) for c in f'{n:0{len(others)}b}'))) \
+            if others else {}
+        low = function.eval(**base, **{related: 0})
+        high = function.eval(**base, **{related: 1})
+        rises |= high > low
+        falls |= high < low
+    if rises and not falls:
+        return 'positive_unate'
+    if falls and not rises:
+        return 'negative_unate'
+    return 'non_unate'
 
 
 def _assert_sense(cell, related, ttype, paths):

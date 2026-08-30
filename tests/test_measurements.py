@@ -28,9 +28,9 @@ class TestMeasurementDB(unittest.TestCase):
         self.assertEqual(len(db.entries), 5)
         self.assertEqual(db.header, ['# corner TT 1.2V 25C'])
         self.assertAlmostEqual(
-            db.entries[('D', 'CLK', 'hold_rising', 'rise_constraint',
+            db.entries[('D', 'CLK', 'hold_rising', 'rise_constraint', '',
                         ('0.0186', '0.0186'))], -5.48e-11)
-        self.assertIn(('CLK', '-', 'min_pulse_width', 'rise_constraint',
+        self.assertIn(('CLK', '-', 'min_pulse_width', 'rise_constraint', '',
                        ('0.0186', '-')), db.entries)
 
     def test_roundtrip_sorted_and_stable(self):
@@ -46,7 +46,7 @@ class TestMeasurementDB(unittest.TestCase):
 
     def test_missing_key_means_not_measured(self):
         db = self._load(SAMPLE)
-        self.assertNotIn(('Q', 'CLK', 'rising_edge', 'cell_fall',
+        self.assertNotIn(('Q', 'CLK', 'rising_edge', 'cell_fall', '',
                           ('0.0186', '0.001')), db.entries)
 
     def test_malformed_entry_is_loud(self):
@@ -68,8 +68,42 @@ class TestMeasurementDB(unittest.TestCase):
         other = self._load(SAMPLE)
         other.merge(db)
         self.assertAlmostEqual(
-            other.entries[('Q', 'CLK', 'rising_edge', 'cell_rise',
+            other.entries[('Q', 'CLK', 'rising_edge', 'cell_rise', '',
                            ('0.0186', '0.001'))], 1.8e-10)
+
+
+class TestConditioningField(unittest.TestCase):
+    def _load(self, text):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'cell_db.tcl'
+            path.write_text(text)
+            return MeasurementDB.load(path)
+
+    def test_fold_worst_case(self):
+        db = self._load(
+            'set DB(CLK:-:min_pulse_width:rise_constraint:D0,0.0186,-) 1.0E-10\n'
+            'set DB(CLK:-:min_pulse_width:rise_constraint:D1,0.0186,-) 1.3E-10\n')
+        table = db.tables()[('CLK', '-', 'min_pulse_width', 'rise_constraint')]
+        self.assertAlmostEqual(table[('0.0186', '-')], 1.3e-10)
+
+    def test_cond_roundtrip(self):
+        import tempfile
+        db = self._load(
+            'set DB(Q:GATE:combinational:cell_rise:GATE1,0.0186,0.001) 2.0E-10\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'out.tcl'
+            db.save(path)
+            self.assertIn(':GATE1,0.0186,0.001', path.read_text())
+            self.assertEqual(MeasurementDB.load(path).entries, db.entries)
+
+    def test_cond_refused_on_constraints(self):
+        with self.assertRaises(ValueError):
+            self._load('set DB(D:CLK:setup_rising:rise_constraint:GATE1,0.0186,0.0186) 1E-10\n')
+
+    def test_mpw_shape_enforced(self):
+        with self.assertRaises(ValueError):
+            self._load('set DB(GATE:GATE:min_pulse_width:rise_constraint:D0,0.0186,0.001) 1E-10\n')
 
 
 if __name__ == '__main__':
