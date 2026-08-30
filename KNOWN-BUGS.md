@@ -23,6 +23,20 @@ Observed on the sg13g2 PDK sweep (74 cells, TT 1.2 V 25 C, official
 - **Non-unate cells (xor2/xnor2)**: worst-case arc selection optimistic
   on one polarity; deviations x2 vs unate cells.
 
+## Liberty rendering
+
+- **Two storage groups instead of one**: a two-state declaration
+  (DS0000, DS0001 = !D) emits one ff/latch group per state variable
+  where vendor libs write a single group with two variables
+  (ff (IQ,IQN)). Cosmetic in general, but WRONG on the second group
+  when a dominant is declared: it repeats e.g. preset : "Sb'" for the
+  INVERTED variable, which that pin actually clears. Fix: unify into
+  one group with two variables (the pairs mechanism is the natural
+  vehicle).
+- **clear_preset_var1/var2 missing**: the schema cannot declare the
+  both-dominants-asserted behavior, so two-dominant cells (sdfbbp)
+  render without it. A cell-config key and five lines.
+
 ## Infrastructure
 
 - **A run that dies writes nothing**: the library exists only in
