@@ -28,6 +28,24 @@ def resolve_subkey(value, base_dir):
     return value
 
 
+def _anchor_cell_paths(config, base):
+    """Resolve relative cell file paths against the config file's own
+    directory: a generated yml can sit anywhere and name its netlist
+    and measurement files by their position next to it."""
+    def anchor(value):
+        path = Path(value)
+        return value if path.is_absolute() else str(base / path)
+    for cell in config.get('cells', {}).values():
+        if not isinstance(cell, dict):
+            continue
+        if 'netlist' in cell:
+            cell['netlist'] = anchor(cell['netlist'])
+        if 'measurements' in cell:
+            files = cell['measurements']
+            cell['measurements'] = anchor(files) if isinstance(files, str) \
+                else [anchor(f) for f in files]
+
+
 def find_config(config_path, quiet=True):
     """Find an appropriately-formatted YAML file in `config_path`"""
 
@@ -54,6 +72,7 @@ def find_config(config_path, quiet=True):
         # Validate the schema
         try:
             config = ConfigFile.validate(config)
+            _anchor_cell_paths(config, file.parent)
             break # Exit on success
         except SchemaError:
             if not quiet:
