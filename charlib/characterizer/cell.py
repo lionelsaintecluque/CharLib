@@ -56,19 +56,22 @@ class Cell:
         else:
             raise TypeError(f'Invalid type for netlist: {type(netlist)}')
 
-        # Map supplies and special pins to (trigger, inverted, role) tuples
-        special_pins = {p.upper(): (Port.Trigger.LEVEL, False, role) for p, role in supply_nodes.items()}
+        # Map supplies and special pins to (trigger, inverted, role, declared
+        # name) tuples. Keys are uppercased to match the case-normalized
+        # subckt line; the declared spelling is what the pin keeps.
+        special_pins = {p.upper(): (Port.Trigger.LEVEL, False, role, p)
+                        for p, role in supply_nodes.items()}
         for role in ['clock', 'set', 'reset', 'enable']:
             if role in cell_config:
                 match cell_config[role].replace('!', 'not ').split():
                     case ['posedge', pin]:
-                        special_pins[pin.upper()] = (Port.Trigger.EDGE, False, role)
+                        special_pins[pin.upper()] = (Port.Trigger.EDGE, False, role, pin)
                     case ['negedge', pin]:
-                        special_pins[pin.upper()] = (Port.Trigger.EDGE, True, role)
+                        special_pins[pin.upper()] = (Port.Trigger.EDGE, True, role, pin)
                     case ['not', pin]:
-                        special_pins[pin.upper()] = (Port.Trigger.LEVEL, True, role)
+                        special_pins[pin.upper()] = (Port.Trigger.LEVEL, True, role, pin)
                     case [pin]:
-                        special_pins[pin.upper()] = (Port.Trigger.LEVEL, False, role)
+                        special_pins[pin.upper()] = (Port.Trigger.LEVEL, False, role, pin)
 
         # Identify diff pairs
         diff_pairs = [tuple(pair.split()) for pair in cell_config.get('pairs', [])]
@@ -111,23 +114,35 @@ class Cell:
                 case True, False: return 'input'
             raise ValueError(f'Unable to determine direction for pin "{pin_name}"')
 
-        # Get pin names from subckt and iterate until there are no unassigned pins remaining
+        # Get pin names from subckt and iterate until there are no unassigned
+        # pins remaining. The subckt line is case-normalized (spice is case-
+        # insensitive); every pin is mapped back to its declared spelling.
+        case_map = {name.upper(): name for name in [*inputs, *outputs]}
+        for pair in diff_pairs:
+            case_map.update({name.upper(): name for name in pair})
         unassigned_pins = self.subckt().split()[2:]
         while unassigned_pins:
             pin = unassigned_pins.pop(0)
             if pin in special_pins:
                 # This pin has a special (i.e. non-logic) role
-                trigger_type, inverted, role = special_pins[pin]
-                self.pins[pin] = Pin(pin, 'input', role, inverted, trigger_type)
-            elif any([pin in pair for pair in diff_pairs]):
-                # This pin is a member of a differential pair; find and build the pair
-                [pair] = [p for p in diff_pairs if pin in p]
-                (noninv_pin, inv_pin) = pair
-                self.diff_pairs[pair] = DifferentialPair(noninv_pin, inv_pin, match_direction(pin))
-                unassigned_pins.remove(pair[pair.index(pin)-1])
+                trigger_type, inverted, role, declared = special_pins[pin]
+                self.pins[declared] = Pin(declared, 'input', role, inverted, trigger_type)
+            elif pin in case_map:
+                pin = case_map[pin]
+                if any([pin in pair for pair in diff_pairs]):
+                    # This pin is a member of a differential pair; find and build the pair
+                    [pair] = [p for p in diff_pairs if pin in p]
+                    (noninv_pin, inv_pin) = pair
+                    self.diff_pairs[pair] = DifferentialPair(noninv_pin, inv_pin, match_direction(pin))
+                    unassigned_pins.remove(pair[pair.index(pin)-1].upper())
+                else:
+                    # This is a standard logic pin
+                    self.pins[pin] = Pin(pin, match_direction(pin))
             else:
-                # This is a standard logic pin
-                self.pins[pin] = Pin(pin, match_direction(pin))
+                raise ValueError(f'Unable to determine direction for pin "{pin}": '
+                                 'not among the declared inputs, outputs, pairs or '
+                                 'special pins (names are matched case-insensitively '
+                                 'against the netlist)')
 
         # Validate pin names if 'inputs' and/or 'outputs' keys are in cell_config
         if 'inputs' in cell_config:
