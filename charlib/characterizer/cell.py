@@ -207,6 +207,13 @@ class Cell:
                 pin_group = liberty.Group('pin', pin.name)
                 pin_group.add_attribute('direction', pin.direction)
                 if pin.direction is Port.Direction.OUT:
+                    # Bound the NLDM tables: without max_capacitance, STA tools
+                    # extrapolate beyond the largest characterized load (wildly,
+                    # for loads far outside the grid) and resizers see no max-cap
+                    # violation to repair on overloaded nets.
+                    loads = cell_config.get('loads')
+                    if loads:
+                        pin_group.add_attribute('max_capacitance', max(loads))
                     # liberty wants an expression, not an assignment: a
                     # sequential output references its storage variable,
                     # a combinational one its boolean expression

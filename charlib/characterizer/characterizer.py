@@ -208,14 +208,20 @@ class CharacterizationSettings:
             'pulling_resistance_unit': spice_unit(self.units.resistance),
             'leakage_power_unit': spice_unit(self.units.power),
             'capacitive_load_unit': [1, self.units.capacitance.prefixed_unit.str_spice()],
-            'slew_upper_threshold_pct_rise': self.logic_thresholds.high,
-            'slew_lower_threshold_pct_rise': self.logic_thresholds.low,
-            'slew_upper_threshold_pct_fall': self.logic_thresholds.high,
-            'slew_lower_threshold_pct_fall': self.logic_thresholds.low,
-            'input_threshold_pct_rise': self.logic_thresholds.rising,
-            'input_threshold_pct_fall': self.logic_thresholds.falling,
-            'output_threshold_pct_rise': self.logic_thresholds.rising,
-            'output_threshold_pct_fall': self.logic_thresholds.falling,
+            # Liberty *_threshold_pct_* attributes are percentages (e.g. 80),
+            # while logic_thresholds are stored as fractions (e.g. 0.8) since
+            # the June 1 syntax change -- convert on write. Downstream tools
+            # take the fractions literally otherwise: OpenSTA believes slews
+            # are measured over 0.6% of the swing and rescales them by ~133x
+            # when combined with a 10/90 library (e.g. IHP IO pads).
+            'slew_upper_threshold_pct_rise': self.logic_thresholds.high * 100,
+            'slew_lower_threshold_pct_rise': self.logic_thresholds.low * 100,
+            'slew_upper_threshold_pct_fall': self.logic_thresholds.high * 100,
+            'slew_lower_threshold_pct_fall': self.logic_thresholds.low * 100,
+            'input_threshold_pct_rise': self.logic_thresholds.rising * 100,
+            'input_threshold_pct_fall': self.logic_thresholds.falling * 100,
+            'output_threshold_pct_rise': self.logic_thresholds.rising * 100,
+            'output_threshold_pct_fall': self.logic_thresholds.falling * 100,
         }
 
 class SimulationSettings:
