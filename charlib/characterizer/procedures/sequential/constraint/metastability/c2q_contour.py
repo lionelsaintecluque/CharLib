@@ -338,7 +338,8 @@ def find_setup_hold_for_path(cell, config, settings, variation, path, state_maps
     # not depend on the data slew there, and sibling variations would otherwise
     # collide on the same (clock_slew) LUT key.
     if variation['data_slews'] == max(config.parameters['data_slews']) and not math.isnan(worst_c2q):
-        add_c2q_arc(result, clock_pin, output_pin, output_transition, n_cs=n_cs,
+        add_c2q_arc(result, cell.clock, output_pin, output_transition,
+                    n_cs=len(config.parameters['clock_slews']),
                     clock_slew=cs.convert(settings.units.time.prefixed_unit).value,
                     load=C_LOAD.convert(settings.units.capacitance.prefixed_unit).value,
                     delay=to_t(worst_c2q @ PySpice.Unit.u_s),
