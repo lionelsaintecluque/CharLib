@@ -8,16 +8,31 @@
 
 ## Getting Started
 
+> **This checkout is the `integration` branch** (CharLib 2.1.0): upstream `database` merged with
+> the private `nebula` Liberty fixes and the session-engine rework. It is a local, unpublished
+> branch — install it **from this working copy**, not from the upstream GitHub tag.
+
+Requirements:
+- Python >= 3.12
+- `libngspice.so` — ngspice built **with `--with-ngshared`** (CharLib drives ngspice through
+  PySpice as a shared library, not as a subprocess). Debian/Ubuntu: `apt install libngspice0-dev`.
+  Fedora has no such package: build it from source, see `~/sources/MEMO_INSTALL_CHARLIB.md`, step 2.
+- Network access at install time (the patched PySpice is pulled from git by `pyproject.toml`).
 
 ```
-# Install libngspice (with shared library)
-sudo apt install libngspice0-dev # Your distro may have a different name for this package
-# Install CharLib
-python3 -m pip install git+https://github.com/stineje/CharLib.git@2.0.0
+# From the root of this checkout
+git rev-parse --abbrev-ref HEAD          # -> integration
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e .
+# Tell PySpice where libngspice.so lives (bare name with {} — validated on Python 3.13)
+export NGSPICE_LIBRARY_PATH="ngspice{}"
+export LD_LIBRARY_PATH="$HOME/local/lib"  # directory containing libngspice.so, if not system-wide
 # Characterize some cells
 cd test/pdks/osu350
 charlib run osu350.yml -j4 -f AND
 ```
+
+Branch-specific notes live next to this file: `DECISIONS.md`, `KNOWN-BUGS.md`, `WISHLIST.md`.
 
 ## Introduction
 CharLib is an open-source standard cell library characterizer. The current version supports NLDM
@@ -33,7 +48,9 @@ walks through the process of getting started with CharLib, from installation to 
 PDK.
 
 ## Troubleshooting
-If you have any trouble using CharLib, please [open a new issue](https://github.com/stineje/CharLib/issues/new/choose).
+For upstream CharLib behaviour, [open a new issue](https://github.com/stineje/CharLib/issues/new/choose).
+Anything specific to the `integration` branch (session engine, measurement DB, c2q arcs, Liberty
+fixes) is not upstream's concern: check `KNOWN-BUGS.md` first, then ask the branch owner.
 
 ## Citing
 If you use this work in your research, please cite as follows:
