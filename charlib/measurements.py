@@ -239,12 +239,16 @@ def build_from_measurements(cell, config, settings):
 
     for pin, directions in sorted(caps.items()):
         pin_group = result.group('pin', pin)
-        # INTERIM reduction policy (see DECISIONS): worst case over all
-        # slews and companion states, per direction and overall
+        # Reduction policy (see DECISIONS): per direction, worst case over
+        # all slews and companion conditionings (the spread is physical —
+        # series devices change what an input pin sees); the pin scalar is
+        # the MEAN of the two directions, the vendor convention verified
+        # by the charge_integration procedure. Same rule on both paths.
         worst = {d: max(values) for d, values in directions.items()}
         for direction, value in sorted(worst.items()):
             pin_group.add_attribute(f'{direction}_capacitance', to_cap(value))
-        pin_group.add_attribute('capacitance', to_cap(max(worst.values())))
+        pin_group.add_attribute(
+            'capacitance', to_cap(sum(worst.values()) / len(worst)))
 
     return result
 

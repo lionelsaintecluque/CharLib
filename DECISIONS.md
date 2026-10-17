@@ -42,12 +42,17 @@ project-level choices.
 - **Comparisons between tools happen on values, never on file text.**
   No cross-tool formatting constraints.
 
-## To take
+- **Capacitance reduction**: per direction, worst case over slews and
+  companion conditionings (the spread is physical: up to 67 % on
+  stacked pins, 1.03 -> 1.72 fF on a D input gated by its reset);
+  the pin scalar `capacitance` is the MEAN of the two directions —
+  the vendor convention verified by charge_integration. Both the
+  simulation path and the DB import apply the same rule. Both DB
+  capacitance encodings are read (conditioning field per the
+  addendum, and the legacy integer combo axis as an opaque
+  coordinate); folding is identical.
 
-- **Capacitance reduction policy**: the DB carries capacitance per
-  direction x slew x companion-state combo; liberty wants one scalar
-  per pin. INTERIM: worst case over everything. To ratify against
-  the official tables before the DB import ships.
+## To take
 - **Clamped-corner semantics** (see KNOWN-BUGS +37 ps): publish the
   clamped value, or disqualify the corner point?
 - **internal_power decode**: measurement method to establish before
