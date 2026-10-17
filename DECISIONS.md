@@ -83,14 +83,21 @@ project-level choices.
   else moves. The CharLib code never knows a pin name : no cell
   knowledge in the consumer.
 
-## To take
+- **Capacitance reduction**: per direction, worst case over slews and
+  companion conditionings, minus the states the yml declares illegal
+  (17/10, above) — the spread is physical: up to 67 % on stacked pins,
+  1.03 -> 1.72 fF on a D input gated by its reset;
+  the pin scalar `capacitance` is the MEAN of the two directions —
+  the vendor convention verified by charge_integration. Both the
+  simulation path and the DB import apply the same rule. Both DB
+  capacitance encodings are read (conditioning field per the
+  addendum, and the legacy integer combo axis as an opaque
+  coordinate); folding is identical.
 
-- **Capacitance reduction policy**: the DB carries capacitance per
-  direction x slew x companion-state combo; liberty wants one scalar
-  per pin. INTERIM: worst case over everything, minus the states the
-  yml declares illegal (ratified 17/10, below). Still to ratify against
-  the official tables : nominal + `rise/fall_capacitance_range` as the
-  vendor libs do, instead of the bare worst case.
+## To take
+- **Capacitance range attributes**: the vendor libs put a nominal plus
+  `rise/fall_capacitance_range` on each input ; today only the bare
+  worst case per direction ships. To ratify against the official tables.
 - **Clamped-corner semantics** (see KNOWN-BUGS +37 ps): publish the
   clamped value, or disqualify the corner point?
 - **internal_power decode**: measurement method to establish before
