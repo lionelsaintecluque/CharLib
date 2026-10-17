@@ -83,21 +83,26 @@ project-level choices.
   else moves. The CharLib code never knows a pin name : no cell
   knowledge in the consumer.
 
-- **Capacitance reduction**: per direction, worst case over slews and
-  companion conditionings, minus the states the yml declares illegal
-  (17/10, above) — the spread is physical: up to 67 % on stacked pins,
-  1.03 -> 1.72 fF on a D input gated by its reset;
-  the pin scalar `capacitance` is the MEAN of the two directions —
-  the vendor convention verified by charge_integration. Both the
-  simulation path and the DB import apply the same rule. Both DB
-  capacitance encodings are read (conditioning field per the
-  addendum, and the legacy integer combo axis as an opaque
-  coordinate); folding is identical.
+- **Capacitance reduction** (ratified 17/10 evening against the IHP
+  sg13g2 typ tables, "moyennes de moyennes"): per direction the MEAN
+  over slews and companion conditionings, minus the states the yml
+  declares illegal ; the spread goes to `rise/fall_capacitance_range
+  (min, max)` as the vendor libs do ; the pin scalar `capacitance` is
+  the mean of the two directions. The measurement itself is settled
+  (vernier : charge integration over the whole transition, Miller
+  included, slew-independent to 1 %) ; the spread is physical — nand2 A
+  : 2.25 fF with B=0, 3.75 fF with B=1, the output toggles only then.
+  Why the mean : the former worst case sat +17 to +32 % above IHP on
+  every pin of nand2/nand3/nor2, the mean within -10/+12 % :
+    nand2 A rise  worst 3.72 / mean 2.99 / IHP 2.93 ;  A fall 3.75 / 3.07 / 2.84
+    nand2 B rise  3.68 / 3.27 / 3.10 ;  nand3 A rise 3.78 / 2.65 / 2.92
+    nor2 B fall   3.74 / 2.97 / 2.85
+  A worst case on every net adds up along a path ; the vendor does not
+  publish it, it publishes the range. Both DB capacitance encodings are
+  read (conditioning field per the addendum, and the legacy integer
+  combo axis as an opaque coordinate).
 
 ## To take
-- **Capacitance range attributes**: the vendor libs put a nominal plus
-  `rise/fall_capacitance_range` on each input ; today only the bare
-  worst case per direction ships. To ratify against the official tables.
 - **Clamped-corner semantics** (see KNOWN-BUGS +37 ps): publish the
   clamped value, or disqualify the corner point?
 - **internal_power decode**: measurement method to establish before

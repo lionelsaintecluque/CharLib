@@ -195,6 +195,36 @@ def excluder(pins, rules):
     return excluded
 
 
+def collect_caps(db, excluded=None):
+    """pin -> direction -> [SI values] of every capacitance entry (slews x
+    companion conditionings), UNFOLDED : the reduction is the caller's.
+    Entries whose conditioning the ``excluded`` predicate names leave
+    the collection while a legal sibling exists for the (pin,
+    direction) ; never an empty list."""
+    legal, illegal = {}, {}
+    for (pin, related, ttype, lut, cond, axes), value in db.entries.items():
+        if ttype != CAP_TYPE:
+            continue
+        out = bool(cond) and excluded is not None and excluded(pin, related, ttype, cond)
+        (illegal if out else legal).setdefault(pin, {}).setdefault(lut, []).append(value)
+    caps = {}
+    for pin in set(legal) | set(illegal):
+        for d in set(legal.get(pin, {})) | set(illegal.get(pin, {})):
+            vals = legal.get(pin, {}).get(d) or illegal[pin][d]
+            caps.setdefault(pin, {})[d] = vals
+    return caps
+
+
+def cap_fold(values):
+    """The published capacitance of one (pin, direction) from its
+    measured values over slews and companion conditionings : (mean, min,
+    max). Ratified 17/10 against the IHP sg13g2 tables (DECISIONS) : the
+    MEAN is what the vendor publishes (within ~10 %), the worst case
+    sits 17-32 % above it ; min and max feed the *_capacitance_range
+    attributes, the vendor's own way of keeping the spread visible."""
+    return (sum(values) / len(values), min(values), max(values))
+
+
 def illegal_excluder(cell):
     """The cell's ``illegal:`` rules as a fold excluder, None when it has none."""
     if not getattr(cell, 'illegal', None):
@@ -230,9 +260,10 @@ def build_from_measurements(cell, config, settings):
     # pin -> direction -> [SI values]: reduced to attributes below
     caps = {}
 
-    for (pin, related, ttype, lut_name), points in db.tables(illegal_excluder(cell)).items():
+    excluder = illegal_excluder(cell)
+    caps = collect_caps(db, excluder)        # unfolded : the fold is cap_fold's
+    for (pin, related, ttype, lut_name), points in db.tables(excluder).items():
         if ttype == CAP_TYPE:
-            caps.setdefault(pin, {}).setdefault(lut_name, []).extend(points.values())
             continue
         if ttype in DELAY_TYPES or ttype in ASSERT_TYPES:
             if ttype in ASSERT_TYPES:
@@ -299,16 +330,20 @@ def build_from_measurements(cell, config, settings):
 
     for pin, directions in sorted(caps.items()):
         pin_group = result.group('pin', pin)
-        # Reduction policy (see DECISIONS): per direction, worst case over
-        # all slews and companion conditionings (the spread is physical —
-        # series devices change what an input pin sees); the pin scalar is
-        # the MEAN of the two directions, the vendor convention verified
-        # by the charge_integration procedure. Same rule on both paths.
-        worst = {d: max(values) for d, values in directions.items()}
-        for direction, value in sorted(worst.items()):
-            pin_group.add_attribute(f'{direction}_capacitance', to_cap(value))
-        pin_group.add_attribute(
-            'capacitance', to_cap(sum(worst.values()) / len(worst)))
+        # Reduction policy (DECISIONS, ratified 17/10 against the IHP
+        # tables) : per direction the MEAN over slews and companion
+        # conditionings (minus the illegal states), the spread published
+        # as <dir>_capacitance_range (min, max) ; the pin scalar is the
+        # mean of the two directions. "Moyennes de moyennes, soyons
+        # lisses" — the worst case sat 17-32 % above the vendor.
+        means = {}
+        for direction, values in sorted(directions.items()):
+            mean, lo, hi = cap_fold(values)
+            means[direction] = mean
+            pin_group.add_attribute(f'{direction}_capacitance', to_cap(mean))
+            pin_group.add_attribute(f'{direction}_capacitance_range',
+                                    [round(to_cap(lo), 6), round(to_cap(hi), 6)])
+        pin_group.add_attribute('capacitance', to_cap(sum(means.values()) / len(means)))
 
     return result
 

@@ -3,7 +3,7 @@ import sys, tempfile, unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from charlib.measurements import MeasurementDB, excluder, parse_cond
+from charlib.measurements import MeasurementDB, excluder, parse_cond, collect_caps, cap_fold
 
 
 SAMPLE = """\
@@ -110,6 +110,25 @@ class TestConditioningField(unittest.TestCase):
             tables[('QP', 'DN', 'combinational', 'cell_fall')][('0.0186', '0.001')], 1.0e-10)
         # no excluder : the former worst-case fold
         self.assertAlmostEqual(db.tables()[('LATCH', '-', 'capacitance', 'rise')][('2.5', '-')], 6.1e-15)
+
+    def test_caps_are_collected_unfolded_and_folded_as_mean_and_range(self):
+        db = self._load(
+            'set DB(A:-:capacitance:rise:B0,2.5,-) 2.25E-15\n'
+            'set DB(A:-:capacitance:rise:B1,2.5,-) 3.75E-15\n'
+            'set DB(A:-:capacitance:rise:B1,0.5,-) 3.74E-15\n'
+            'set DB(LATCH:-:capacitance:rise:DP0DN0,2.5,-) 4.7E-15\n'
+            'set DB(LATCH:-:capacitance:rise:DP1DN1,2.5,-) 6.1E-15\n')
+        caps = collect_caps(db)
+        self.assertEqual(sorted(caps['A']['rise']), [2.25e-15, 3.74e-15, 3.75e-15])
+        mean, lo, hi = cap_fold(caps['A']['rise'])
+        self.assertAlmostEqual(mean, (2.25e-15 + 3.74e-15 + 3.75e-15) / 3)
+        self.assertEqual((lo, hi), (2.25e-15, 3.75e-15))
+        # the illegal state leaves the collection (a legal sibling exists)
+        ex = excluder(['LATCH', 'DP', 'DN', 'A', 'B'], [{'LATCH': True, 'DP': True, 'DN': True}])
+        self.assertEqual(collect_caps(db, ex)['LATCH']['rise'], [4.7e-15])
+        # ... but never empties it
+        ex_all = excluder(['LATCH', 'DP', 'DN', 'A', 'B'], [{'B': False}, {'B': True}])
+        self.assertEqual(len(collect_caps(db, ex_all)['A']['rise']), 3)
 
     def test_parse_cond_longest_pin_first(self):
         self.assertEqual(parse_cond('D0RESET_B1', ['D', 'RESET_B', 'B', 'GATE']),
