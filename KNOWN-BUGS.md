@@ -32,10 +32,14 @@ Observed on the sg13g2 PDK sweep (74 cells, TT 1.2 V 25 C, official
   when a dominant is declared: it repeats e.g. preset : "Sb'" for the
   INVERTED variable, which that pin actually clears. Fix: unify into
   one group with two variables (the pairs mechanism is the natural
-  vehicle).
-- **clear_preset_var1/var2 missing**: the schema cannot declare the
-  both-dominants-asserted behavior, so two-dominant cells (sdfbbp)
-  render without it. A cell-config key and five lines.
+  vehicle). PARTIAL (16/10): a declared `pairs` already yields the
+  single group (latch (DS0000, DS0001)) and the vernier pilots declare
+  it ; a two-state declaration without `pairs` still splits.
+- **clear_preset_var1/var2 not derivable for a DATA latch or ff with
+  two dominants** (sdfbbp) : the dominants are not in the state
+  function, so nothing is emitted unless the both-asserted state is
+  declared `illegal:` (then X/X). Derived for the gated SR latch since
+  17/10 (DECISIONS).
 
 ## Infrastructure
 

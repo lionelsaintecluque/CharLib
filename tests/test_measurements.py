@@ -3,7 +3,7 @@ import sys, tempfile, unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from charlib.measurements import MeasurementDB
+from charlib.measurements import MeasurementDB, excluder, parse_cond
 
 
 SAMPLE = """\
@@ -86,6 +86,36 @@ class TestConditioningField(unittest.TestCase):
             'set DB(CLK:-:min_pulse_width:rise_constraint:D1,0.0186,-) 1.3E-10\n')
         table = db.tables()[('CLK', '-', 'min_pulse_width', 'rise_constraint')]
         self.assertAlmostEqual(table[('0.0186', '-')], 1.3e-10)
+
+    def test_fold_leaves_illegal_states_out(self):
+        db = self._load(
+            'set DB(LATCH:-:capacitance:rise:DP0DN0,2.5,-) 4.7E-15\n'
+            'set DB(LATCH:-:capacitance:rise:DP1DN1,2.5,-) 6.1E-15\n'
+            'set DB(DP:-:capacitance:rise:LATCH1DN1,2.5,-) 3.2E-15\n'
+            'set DB(DP:-:capacitance:rise:LATCH0DN1,2.5,-) 2.5E-15\n'
+            'set DB(LATCH:-:min_pulse_width:rise_constraint:DP1,0.0186,-) 7.7E-11\n'
+            'set DB(LATCH:-:min_pulse_width:rise_constraint:DN1,0.0186,-) 7.6E-11\n'
+            'set DB(QP:DN:combinational:cell_fall:LATCH1DP1,0.0186,0.001) 1.0E-10\n')
+        excluded = excluder(['LATCH', 'DP', 'DN', 'QP', 'QN'],
+                            [{'LATCH': True, 'DP': True, 'DN': True}])
+        tables = db.tables(excluded)
+        # the illegal state leaves the fold of the enable's and the dominants' caps
+        self.assertAlmostEqual(tables[('LATCH', '-', 'capacitance', 'rise')][('2.5', '-')], 4.7e-15)
+        self.assertAlmostEqual(tables[('DP', '-', 'capacitance', 'rise')][('2.5', '-')], 2.5e-15)
+        # a rule naming an undetermined pin does not match : mpw stays worst-case
+        self.assertAlmostEqual(
+            tables[('LATCH', '-', 'min_pulse_width', 'rise_constraint')][('0.0186', '-')], 7.7e-11)
+        # the only entry of an arc is never dropped, illegal or not
+        self.assertAlmostEqual(
+            tables[('QP', 'DN', 'combinational', 'cell_fall')][('0.0186', '0.001')], 1.0e-10)
+        # no excluder : the former worst-case fold
+        self.assertAlmostEqual(db.tables()[('LATCH', '-', 'capacitance', 'rise')][('2.5', '-')], 6.1e-15)
+
+    def test_parse_cond_longest_pin_first(self):
+        self.assertEqual(parse_cond('D0RESET_B1', ['D', 'RESET_B', 'B', 'GATE']),
+                         {'D': False, 'RESET_B': True})
+        with self.assertRaises(ValueError):
+            parse_cond('X1', ['D'])
 
     def test_cond_roundtrip(self):
         import tempfile

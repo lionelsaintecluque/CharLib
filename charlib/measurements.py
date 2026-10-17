@@ -131,15 +131,75 @@ class MeasurementDB:
         tmp.write_text('\n'.join(lines) + '\n', encoding='utf-8')
         tmp.replace(path)
 
-    def tables(self):
+    def tables(self, excluded=None):
         """Group entries: (pin, related, timing_type, lut) -> {axes: value},
         folding conditioned entries worst-case (the db keeps what was
-        measured; the liberty consumer publishes the pessimistic table)."""
+        measured; the liberty consumer publishes the pessimistic table).
+
+        ``excluded(pin, related, ttype, cond)`` names the conditioned
+        entries that leave the fold (usage-illegal states, see
+        ``illegal_excluder``). An excluded entry is dropped only while a
+        legal sibling exists at the same point : the fold never empties
+        an arc, nor invents a value."""
         grouped = {}
+        legal = {}   # (key, axes) -> a non-excluded entry has been folded
         for (pin, related, ttype, lut, cond, axes), value in self.entries.items():
-            table = grouped.setdefault((pin, related, ttype, lut), {})
-            table[axes] = max(table[axes], value) if axes in table else value
+            key = (pin, related, ttype, lut)
+            table = grouped.setdefault(key, {})
+            out = bool(cond) and excluded is not None and excluded(pin, related, ttype, cond)
+            if axes not in table:
+                table[axes] = value
+                legal[key, axes] = not out
+            elif out and legal[key, axes]:
+                continue
+            elif not out and not legal[key, axes]:
+                table[axes] = value          # first legal entry supersedes the illegal ones
+                legal[key, axes] = True
+            else:
+                table[axes] = max(table[axes], value)
         return grouped
+
+
+def parse_cond(cond, pins):
+    """Conditioning field -> companion levels : ``LATCH1DN1`` ->
+    {'LATCH': True, 'DN': True}. Longest pin name first (RESET_B before B)."""
+    state, rest = {}, cond
+    names = sorted(pins, key=len, reverse=True)
+    while rest:
+        for name in names:
+            if rest.startswith(name) and len(rest) > len(name) and rest[len(name)] in '01':
+                state[name] = rest[len(name)] == '1'
+                rest = rest[len(name) + 1:]
+                break
+        else:
+            raise ValueError(f'unparseable conditioning field "{cond}" (pins {sorted(pins)})')
+    return state
+
+
+def excluder(pins, rules):
+    """Predicate for ``MeasurementDB.tables`` : true when the entry's
+    conditioning, with the toggling pin (the measured pin for caps and
+    mpw, the related pin for delay arcs) at either level, satisfies one
+    of ``rules`` (pin -> level dicts) : the measurement crossed a state
+    the cell's user declares illegal. A rule naming an undetermined pin
+    does not match."""
+    def excluded(pin, related, ttype, cond):
+        state = parse_cond(cond, pins)
+        toggling = pin if related == '-' else related
+        for level in (False, True):
+            crossed = dict(state)
+            crossed.setdefault(toggling, level)
+            if any(all(crossed.get(p) == v for p, v in rule.items()) for rule in rules):
+                return True
+        return False
+    return excluded
+
+
+def illegal_excluder(cell):
+    """The cell's ``illegal:`` rules as a fold excluder, None when it has none."""
+    if not getattr(cell, 'illegal', None):
+        return None
+    return excluder([p.name for p in cell.all_pins()], cell.illegal)
 
 
 def build_from_measurements(cell, config, settings):
@@ -170,7 +230,7 @@ def build_from_measurements(cell, config, settings):
     # pin -> direction -> [SI values]: reduced to attributes below
     caps = {}
 
-    for (pin, related, ttype, lut_name), points in db.tables().items():
+    for (pin, related, ttype, lut_name), points in db.tables(illegal_excluder(cell)).items():
         if ttype == CAP_TYPE:
             caps.setdefault(pin, {}).setdefault(lut_name, []).extend(points.values())
             continue

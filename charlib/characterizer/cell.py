@@ -1,6 +1,6 @@
 """Encapsulates a cell to be tested."""
 
-import itertools, re
+import itertools, os, re
 from pathlib import Path
 
 from charlib.characterizer.procedures import registered_procedures
@@ -10,6 +10,21 @@ from charlib.characterizer.logic.functions import Function
 from charlib.characterizer.port import Port, Pin, DifferentialPair
 from charlib.characterizer.logic.Parser import parse_logic
 from charlib.liberty import liberty
+
+def parse_conjunction(expr, field):
+    """"LATCH & DP & !DN" -> {'LATCH': True, 'DP': True, 'DN': False}"""
+    out = {}
+    for literal in expr.split('&'):
+        match literal.replace('!', 'not ').split():
+            case ['not', pin]:
+                out[pin] = False
+            case [pin]:
+                out[pin] = True
+            case _:
+                raise ValueError(f'Invalid {field} declaration "{expr}": a '
+                                 'conjunction of pin literals, "LATCH & DP & !DN"')
+    return out
+
 
 class Cell:
     """A standard cell and its functional details"""
@@ -47,8 +62,10 @@ class Cell:
         # Validate netlist
         netlist = cell_config['netlist']
         if isinstance(netlist, str):
-            # Check for ~ and expand if present
-            netlist = Path(netlist).expanduser() if '~' in netlist else Path(netlist)
+            # ~ and $VAR expand as the shell would : a tracked yml may
+            # spell the PDK root as $PDK_ROOT, like its decks (ngspice
+            # expands it too)
+            netlist = Path(os.path.expandvars(netlist)).expanduser()
         if isinstance(netlist, Path):
             if not netlist.is_file():
                 raise ValueError(f'Invalid value for netlist: "{netlist}" is not a file')
@@ -61,9 +78,27 @@ class Cell:
         # subckt line; the declared spelling is what the pin keeps.
         special_pins = {p.upper(): (Port.Trigger.LEVEL, False, role, p)
                         for p, role in supply_nodes.items()}
+        # role -> (gate pin name, gate inverted) for a set/reset declared
+        # in the gated form "LATCH & DP" : the dominant acts only while
+        # the gate is up (a synchronous dominant ; the gate is the latch
+        # enable). A bare pin stays an asynchronous dominant.
+        self.role_gates = {}
         for role in ['clock', 'set', 'reset', 'enable']:
             if role in cell_config:
-                match cell_config[role].replace('!', 'not ').split():
+                tokens = cell_config[role].replace('!', 'not ').split()
+                if '&' in tokens:
+                    cut = tokens.index('&')
+                    gate_tokens, tokens = tokens[:cut], tokens[cut + 1:]
+                    match gate_tokens:
+                        case ['not', gate]:
+                            self.role_gates[role] = (gate, True)
+                        case [gate]:
+                            self.role_gates[role] = (gate, False)
+                        case _:
+                            raise ValueError(
+                                f'Invalid {role} declaration "{cell_config[role]}": '
+                                'the gated form is "<gate> & <pin>" (either may carry not)')
+                match tokens:
                     case ['posedge', pin]:
                         special_pins[pin.upper()] = (Port.Trigger.EDGE, False, role, pin)
                     case ['negedge', pin]:
@@ -72,6 +107,22 @@ class Cell:
                         special_pins[pin.upper()] = (Port.Trigger.LEVEL, True, role, pin)
                     case [pin]:
                         special_pins[pin.upper()] = (Port.Trigger.LEVEL, False, role, pin)
+
+        # usage-illegal states : the ARCHITECTURE's rule, not a truth of
+        # the cell (`illegal: ["LATCH & DP & DN"]`, conjunctions of pin
+        # literals). The measurement db keeps what was measured there ;
+        # the liberty consumer leaves those entries out of its worst-case
+        # folds (measurements.illegal_excluder).
+        self.illegal = [parse_conjunction(expr, 'illegal')
+                        for expr in cell_config.get('illegal', [])]
+        # the both-dominants state as the cell's truth table spells it
+        # (`clear_preset_var: [H, L]`), when the state functions cannot
+        # tell (an ff's asynchronous dominants are not in next_state)
+        declared = [str(v).upper() for v in cell_config.get('clear_preset_var', [])]
+        if declared and (len(declared) != 2 or not set(declared) <= set('LHNTX')):
+            raise ValueError(f'Invalid clear_preset_var {cell_config["clear_preset_var"]}: '
+                             'two of L, H, N, T, X')
+        self.clear_preset_var = tuple(declared) or None
 
         # Identify diff pairs
         diff_pairs = [tuple(pair.split()) for pair in cell_config.get('pairs', [])]
@@ -163,6 +214,12 @@ class Cell:
 
         ## 4. Add as much liberty data as we can right now
         self.liberty = liberty.Group('cell', name)
+        known = {p.name for p in self.all_pins()}
+        for rule in self.illegal:
+            for pin in rule:
+                if pin not in known:
+                    raise ValueError(f'illegal state names pin {pin}, not a pin of '
+                                     f'{self.name} ({sorted(known)})')
         self.liberty.add_attribute('area', cell_config.get('area', 0.0), 2)
         def to_lib_expr(pin):
             return pin.name + "'" if pin.is_inverted() else pin.name
@@ -191,12 +248,31 @@ class Cell:
             else: # latch group
                 storage_group = liberty.Group('latch', var_string)
                 storage_group.add_attribute('data_in', self.functions[pin].expression)
-                if self.enable:
+                gated = self._gated_dominants()
+                if gated and not self._data_operands(pin):
+                    # A gated SR latch : the state is written by the
+                    # dominants alone (no data operand). Standard liberty
+                    # has no latch without data_in/enable (yosys refuses
+                    # one), so it is spelled HYBRID (17/10) : a D-latch
+                    # transparent while the gate and a dominant are up,
+                    # the declared state function being its data, PLUS
+                    # the dominants as preset/clear attributes, which
+                    # gives clear_preset_var1/2 a place (below).
+                    (gate, gate_inverted) = self.role_gates[gated[0].role]
+                    gate_expr = f'!{gate}' if gate_inverted else gate
+                    dominants = ' | '.join(to_lib_expr(d) for d in gated)
+                    storage_group.add_attribute('enable', f'{gate_expr} & ({dominants})')
+                elif self.enable:
                     storage_group.add_attribute('enable', to_lib_expr(self.enable))
             if self.clear:
-                storage_group.add_attribute('clear', to_lib_expr(self.clear))
+                storage_group.add_attribute('clear', self._dominant_expr(self.clear))
             if self.preset:
-                storage_group.add_attribute('preset', to_lib_expr(self.preset))
+                storage_group.add_attribute('preset', self._dominant_expr(self.preset))
+            if self.clear and self.preset:
+                both = self._clear_preset_vars(storage_vars, parsed_states)
+                if both is not None:
+                    storage_group.add_attribute('clear_preset_var1', both[0])
+                    storage_group.add_attribute('clear_preset_var2', both[1])
             self.liberty.add_group(storage_group)
         for pin in self.all_pins(): # Add pin groups
             if pin.name in self.pg_pins:
@@ -221,7 +297,11 @@ class Cell:
                     pin_group.add_attribute(
                         'function',
                         state_var if state_var else self.functions[pin.name].expression)
-                elif pin.role == Port.Role.CLOCK:
+                elif pin.role == Port.Role.CLOCK \
+                     or (pin.role == Port.Role.ENABLE and states):
+                    # a latch enable is a clock pin for STA (time
+                    # borrowing, setup/hold against it), as vendor libs
+                    # spell it ; a tristate enable (no state) is not
                     pin_group.add_attribute('clock', "true")
             self.liberty.add_group(pin_group)
 
@@ -305,6 +385,72 @@ class Cell:
         """Return the cell's reset pin, if present"""
         return self._get_first_pin_with_role('reset')
 
+    def _gated_dominants(self):
+        """The set/reset pins declared in the gated form, in that order."""
+        return [pin for pin in (self.preset, self.clear)
+                if pin is not None and pin.role in self.role_gates]
+
+    def _both_asserted(self):
+        """Pin levels of the state where every dominant is asserted, its
+        gate (when declared gated) up."""
+        state = {}
+        for dom in (self.preset, self.clear):
+            state[dom.name] = not dom.is_inverted()
+            if dom.role in self.role_gates:
+                (gate, gate_inverted) = self.role_gates[dom.role]
+                state[gate] = not gate_inverted
+        return state
+
+    def _clear_preset_vars(self, storage_vars, parsed_states):
+        """liberty clear_preset_var1/var2, the storage variables while
+        clear and preset are asserted together (17/10) :
+        - X/X when that state is declared illegal : its exit is a race,
+          the state is lost (Q=X, QN=!Q, and !X is X) ;
+        - else the declared ``clear_preset_var`` (the truth table's own
+          word, an ff with set and reset : sdfbbp H/L as the vendor) ;
+        - else the state functions evaluated there, when the dominants
+          (and gates) determine every operand : the gated SR latch,
+          state DS0000 = DP & !DN -> L, DS0001 = !DP & DN -> L ;
+        - else None : not derivable (an ff's asynchronous dominants are
+          not in its next_state), nothing emitted."""
+        from charlib.characterizer.logic.evaluators import BooleanEvaluator
+        state = self._both_asserted()
+        if any(all(state.get(p) == v for p, v in rule.items()) for rule in self.illegal):
+            return ('X', 'X')
+        if self.clear_preset_var:
+            return self.clear_preset_var
+        values = []
+        for var in storage_vars:
+            expr = parsed_states.get(var)
+            if expr is None:            # the '<var>inv' complement
+                if not values:
+                    return None
+                values.append('L' if values[0] == 'H' else 'H')
+                continue
+            ev = BooleanEvaluator(expr)
+            if not set(ev.operands) <= set(state):
+                return None
+            values.append('H' if ev(**{p: state[p] for p in ev.operands}) else 'L')
+        return tuple(values[:2])
+
+    def _dominant_expr(self, pin):
+        """Liberty expression of a set/reset pin : the bare pin (with its
+        polarity) or, declared gated, 'gate & pin'."""
+        expr = pin.name + "'" if pin.is_inverted() else pin.name
+        if pin.role in self.role_gates:
+            (gate, gate_inverted) = self.role_gates[pin.role]
+            expr = f'{gate}{chr(39) if gate_inverted else ""} & {expr}'
+        return expr
+
+    def _data_operands(self, output):
+        """The operands of an output's declared function that are neither
+        a dominant nor the enable : empty for a state written by the
+        dominants alone."""
+        special = {pin.name for pin in (self.preset, self.clear, self.enable, self.clock)
+                   if pin is not None}
+        return [name for name in OPERAND_REGEX.findall(self.functions[output].expression)
+                if name not in special]
+
     def paths(self):
         """Generator for input-to-output paths through a cell
 
@@ -364,9 +510,10 @@ class CellTestConfig:
         for model in models:
             # Split to path and (optional) section, then validate both
             filename, *libname = model.split()
-            filename = Path(filename).expanduser() if '~' in filename else Path(filename)
+            filename = Path(os.path.expandvars(filename)).expanduser()
             if not filename.exists():
-                raise ValueError(f'Unable to locate model at "{filename}"')
+                raise ValueError(f'Unable to locate model at "{filename}" '
+                                 '(a $VAR in the path must be exported)')
             if len(libname) > 1:
                 raise ValueError(f'Expected 1 libname in model "{model}", got {len(libname)}:' \
                                  f'{libname}')

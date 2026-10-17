@@ -41,13 +41,56 @@ project-level choices.
   the DB only says what was measured.
 - **Comparisons between tools happen on values, never on file text.**
   No cross-tool formatting constraints.
+- **Latches render as liberty latch groups, synchronous dominants are
+  declared gated** (adopted, implemented 16/10). The cell yml declares
+  a latch by its `enable` role (`enable: GATE`, `not GATE_N`), never
+  by `clock` (which renders an ff group) ; the enable pin carries
+  `clock : true` as vendor libs do (STA needs it for the setup/hold
+  checks against it). A set/reset in the gated form `<gate> & <pin>`
+  (`set: LATCH & DP`) is SYNCHRONOUS : it acts while the gate is up,
+  and renders `preset : "LATCH & DP"` on a data latch. A gated SR
+  latch (no data operand in the state function, `state: DS0000 =
+  DP & !DN`) renders as a D-latch transparent while the gate and a
+  dominant are up (`enable : "LATCH & (DP | DN)"`, `data_in : "DP &
+  !DN"`) : standard liberty, readable by yosys, which refuses a latch
+  group without data_in/enable. Exact but for the both-asserted
+  state. The set/reset roles stay on
+  the dominant pins : the assert arcs' timing_sense derives from them.
+  **Hybrid since 17/10** : the gated dominants are ALSO emitted as the
+  group's `preset`/`clear` attributes (`preset : "LATCH & DP"`), which
+  is where liberty describes the both-asserted state :
+  `clear_preset_var1/2` = X/X when that state is declared `illegal:`
+  (its exit is a race, the state is lost : Q=X, QN=!Q, !X is X), else
+  the state functions evaluated with the dominants asserted (L/L for
+  the SR), nothing when not derivable. Read by OpenSTA and by yosys
+  (-lib and whitebox) ; yosys ignores the vars and keeps QN=!QP, so the
+  gain is documentary for our tools, and the legal states render the
+  same logic as before.
+
+- **Usage-illegal states leave the worst-case fold** (adopted,
+  implemented 17/10). A state the ARCHITECTURE forbids (the gated SR
+  latch with both dominants up under the open enable : its exit is a
+  race) is not a truth of the cell, so the characterizer measures it
+  all the same and the db keeps it. The decision to leave it out is
+  the cell owner's, declared in the cell yml as conjunctions of pin
+  literals (`illegal: ["LATCH & DP & DN"]`), and honoured by this
+  consumer at fold time only : a conditioned entry whose conditioning,
+  with the toggling pin at either level, satisfies a rule leaves the
+  fold while a legal sibling exists at the same point. The fold never
+  empties an arc. A rule naming a pin the conditioning does not
+  determine does not match (LATCH mpw under DP1 stays). Effect on the
+  gated SR latch : LATCH 6.1 -> 4.7 fF, DP/DN 3.2 -> 2.5 fF ; nothing
+  else moves. The CharLib code never knows a pin name : no cell
+  knowledge in the consumer.
 
 ## To take
 
 - **Capacitance reduction policy**: the DB carries capacitance per
   direction x slew x companion-state combo; liberty wants one scalar
-  per pin. INTERIM: worst case over everything. To ratify against
-  the official tables before the DB import ships.
+  per pin. INTERIM: worst case over everything, minus the states the
+  yml declares illegal (ratified 17/10, below). Still to ratify against
+  the official tables : nominal + `rise/fall_capacitance_range` as the
+  vendor libs do, instead of the bare worst case.
 - **Clamped-corner semantics** (see KNOWN-BUGS +37 ps): publish the
   clamped value, or disqualify the corner point?
 - **internal_power decode**: measurement method to establish before

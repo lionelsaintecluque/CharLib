@@ -21,8 +21,13 @@ class BooleanEvaluator:
 
     def __call__(self, **inputs) -> bool:
         """Call the evaluator's stored expression"""
-        evaluator = eval(f'lambda {",".join(self.operands)}: {self.expression}')
-        return evaluator(**inputs)
+        # The stored expression is upper-cased (spice is case-insensitive);
+        # the lambda's arguments and the caller's keywords follow suit, so
+        # a lower-case pin name (sg13g2_io: pad, c2p, c2p_en) evaluates
+        # like an upper-case one (vernier/sngl_endedIO, 15/09).
+        operands = [operand.upper() for operand in self.operands]
+        evaluator = eval(f'lambda {",".join(operands)}: {self.expression}')
+        return evaluator(**{name.upper(): value for name, value in inputs.items()})
 
     @property
     def operands(self):
@@ -54,12 +59,17 @@ class StateMachineEvaluator:
     def __call__(self, **inputs) -> bool:
         """Compute the next state based on the inputs"""
         # FIXME: clear/preset priority order varies for different cells, and should be user-configurable
-        if self.clear and self.clear.is_asserted(inputs.pop(self.clear.name)):
+        if self.clear and self.clear.is_asserted(inputs[self.clear.name]):
             return self.clear_state
-        elif self.preset and self.preset.is_asserted(inputs.pop(self.preset.name)):
+        elif self.preset and self.preset.is_asserted(inputs[self.preset.name]):
             return self.preset_state
         else:
-            return self.expression(**inputs)
+            # the expression sees its own operands only : a dominant is
+            # usually not one of them, but a gated SR latch's state
+            # function names its dominants (DP & !DN) — it keeps them
+            needed = {name.upper() for name in self.expression.operands}
+            return self.expression(**{name: value for name, value in inputs.items()
+                                      if name.upper() in needed})
 
     @property
     def operands(self):

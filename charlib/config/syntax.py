@@ -108,17 +108,20 @@ class ConfigFile:
                 'set',
                 description='The name and trigger type of the cell\'s set pin, in  the format ' \
                             f'{TRIGGER_FORMAT} (for example: ``not SN`` defines an active-low ' \
-                            'synchronous set pin).'
+                            'asynchronous set pin). The gated form ``<gate> & <pin>`` ' \
+                            '(for example: ``LATCH & DP``) declares a SYNCHRONOUS set, acting ' \
+                            'only while the gate (the latch enable) is up.'
             )
-        ) : Regex('^(posedge|negedge|not|!|())[ ]*[a-zA-Z0-9_]+'),
+        ) : Regex('^((not |!)?[a-zA-Z0-9_]+[ ]*&[ ]*)?(posedge|negedge|not|!|())[ ]*[a-zA-Z0-9_]+'),
         Optional(
             Literal(
                 'reset',
                 description='The name and trigger type of the cell\'s reset pin, in the format ' \
                             '{TRIGGER_FORMAT} (for example: ``negedge RN`` defines an active-low ' \
-                            'asynchronous reset pin).'
+                            'asynchronous reset pin). The gated form ``<gate> & <pin>`` ' \
+                            '(for example: ``LATCH & DN``) declares a SYNCHRONOUS reset.'
             )
-        ) : Regex('^(posedge|negedge|not|!|())[ ]*[a-zA-Z0-9_]+'),
+        ) : Regex('^((not |!)?[a-zA-Z0-9_]+[ ]*&[ ]*)?(posedge|negedge|not|!|())[ ]*[a-zA-Z0-9_]+'),
         Optional(
             Literal(
                 'state',
@@ -131,6 +134,25 @@ class ConfigFile:
                 'pairs',
                 description='A list of pairs of pins to treat as differential pairs. Pairs must ' \
                             'be listed in the format ``<noninverting_pin> <inverting_pin>``.'
+            )
+        ) : [str],
+        Optional(
+            Literal(
+                'clear_preset_var',
+                description='The two storage variables (IQ, IQN) while clear and preset are ' \
+                            'asserted together, as liberty spells them: ``[H, L]`` (L, H, N, T ' \
+                            'or X). Declared when the cell\'s truth table says it; otherwise ' \
+                            'derived (X/X for an illegal state, the state functions when they ' \
+                            'determine it) or left out.'
+            )
+        ) : [str],
+        Optional(
+            Literal(
+                'illegal',
+                description='States the cell\'s user forbids (a usage rule, not a truth of the ' \
+                            'cell), as conjunctions of pin literals: ``LATCH & DP & !DN``. ' \
+                            'Measurement DB entries conditioned on such a state leave the ' \
+                            'worst-case folds of the liberty consumer (see charlib.measurements).'
             )
         ) : [str],
         Optional(
