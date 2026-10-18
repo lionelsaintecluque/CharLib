@@ -284,7 +284,8 @@ class Cell:
             else:
                 pin_group = liberty.Group('pin', pin.name)
                 pin_group.add_attribute('direction', pin.direction)
-                if pin.direction is Port.Direction.OUT:
+                if pin.direction in (Port.Direction.OUT, Port.Direction.INOUT):
+                    # an inout pin (a bidirectional pad) is an output with a function too (18/10)
                     # Bound the NLDM tables: without max_capacitance, STA tools
                     # extrapolate beyond the largest characterized load (wildly,
                     # for loads far outside the grid) and resizers see no max-cap
