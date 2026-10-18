@@ -25,6 +25,7 @@ class Library(liberty.Group):
     ordered_groups = [
         'operating_conditions',
         'lu_table_template',
+        'power_lut_template',
         'cell',
     ]
 
