@@ -220,7 +220,7 @@ class Cell:
                 if pin not in known:
                     raise ValueError(f'illegal state names pin {pin}, not a pin of '
                                      f'{self.name} ({sorted(known)})')
-        self.liberty.add_attribute('area', cell_config.get('area', 0.0), 2)
+        self.liberty.add_attribute('area', cell_config.get('area', 0.0), 4)   # LEF sizes have 2 decimals, their product 4 (IHP writes 7.2576)
         def to_lib_expr(pin):
             return pin.name + "'" if pin.is_inverted() else pin.name
         inverting_pins = {pair.inverting_port_name for pair in self.diff_pairs.values()}
