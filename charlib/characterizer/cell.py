@@ -196,12 +196,14 @@ class Cell:
                                  'against the netlist)')
 
         # Validate pin names if 'inputs' and/or 'outputs' keys are in cell_config
+        # a pin that a function writes and another reads is inout (a
+        # bidirectional pad : pad = c2p, p2c = pad) : it counts on both sides
         if 'inputs' in cell_config:
-            if not set(cell_config['inputs']) <= set(self.inputs):
-                raise ValueError(f'Expected inputs {cell_config["inputs"]}, found {self.inputs}')
+            if not set(cell_config['inputs']) <= set(self.inputs) | set(self.inouts):
+                raise ValueError(f'Expected inputs {cell_config["inputs"]}, found {self.inputs} (inout {self.inouts})')
         if 'outputs' in cell_config:
-            if not set(cell_config['outputs']) <= set(self.outputs):
-                raise ValueError(f'Expected outputs {cell_config["outputs"]}, found {self.outputs}')
+            if not set(cell_config['outputs']) <= set(self.outputs) | set(self.inouts):
+                raise ValueError(f'Expected outputs {cell_config["outputs"]}, found {self.outputs} (inout {self.inouts})')
 
         ## 3. Construct functions based on pin types & feedback paths
         for output, expression in functions.items():
