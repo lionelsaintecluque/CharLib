@@ -56,6 +56,13 @@ class TestMeasurementDB(unittest.TestCase):
         self.assertIn(('Y', 'A', 'internal_power', 'rise_power', 'B1', ('0.0186', '0.001')), db.entries)
         self.assertIn(('Y', '-', 'leakage_power', 'value', 'A1B1', ('-', '-')), db.entries)
         self.assertAlmostEqual(db.entries[('Y', '-', 'leakage_power', 'value', 'A1B1', ('-', '-'))], 1.62e-10)
+        # the passive energy of an input edge (related -, slew alone), the
+        # state spelled with the stored outputs
+        db = self._load("set DB(CLK:-:internal_power:fall_power:D1RESET_B1Q0Q_N1,0.0186,-) 2.1E-14\n"
+                        "set DB(Q:-:leakage_power:value:CLK0D1RESET_B1Q1Q_N0,-,-) 6.3E-10\n")
+        self.assertIn(('CLK', '-', 'internal_power', 'fall_power', 'D1RESET_B1Q0Q_N1', ('0.0186', '-')), db.entries)
+        self.assertEqual(parse_cond('D1RESET_B1Q0Q_N1', ['CLK', 'D', 'RESET_B', 'Q', 'Q_N']),
+                         {'D': True, 'RESET_B': True, 'Q': False, 'Q_N': True})
 
     def test_malformed_entry_is_loud(self):
         with self.assertRaises(ValueError):

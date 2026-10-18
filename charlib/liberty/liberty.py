@@ -100,6 +100,12 @@ class Group(Statement):
                     self.attributes.get('timing_type').value)
         elif self.name == 'leakage_power' and self.attributes.get('when'):
             return (self.name, self.attributes.get('when').value)
+        elif self.name == 'internal_power':
+            # one group per (related_pin, when) : an output's arcs from several
+            # inputs, an input's passive states — never merged into one
+            related = self.attributes.get('related_pin')
+            when = self.attributes.get('when')
+            return (self.name, related.value if related else '', when.value if when else '')
         return super().unique_key
 
     def add_group(self, group, group_id=''):

@@ -52,9 +52,17 @@ Power keys (vernier branch power, 18/10/2026) :
       leakage, external load excluded ; folded over conditions like the
       delays (worst case) into one internal_power group per (out, in).
   <out>:-:leakage_power:value:<when>,-,-
-      static power of one full input state in WATTS (liberty :
-      leakage_power_unit) ; one leakage_power () { value ; when } group
-      per state, cell_leakage_power = their mean, as the vendor's.
+      static power of one FULL state (inputs, and the stored outputs of a
+      sequential cell) in WATTS (liberty : leakage_power_unit) ; one
+      leakage_power () { value ; when } group per state, cell_leakage_power
+      = their mean, as the vendor's.
+  <in>:-:internal_power:rise_power|fall_power:<when>,<slew>,-
+      PASSIVE energy of an INPUT edge that moves no output (related '-'),
+      in JOULES, over the slew alone : one internal_power () { when } group
+      per state on the input pin (passive 7x1 tables), the edge a state
+      does not carry (it switches an output : the arc's energy) written as
+      the vendor's scalar 0, and a last group without `when` folding the
+      states worst-case — the value a tool applies when the state is unknown.
 """
 
 import re
@@ -288,8 +296,17 @@ def build_from_measurements(cell, config, settings):
     caps = collect_caps(db, excluder)        # unfolded : the fold is cap_fold's
     # (pin, related) -> [LookupTable] : one internal_power group each
     power_luts = {}
+    # pin -> cond -> lut_name -> {slew: SI} : the passive energies, grouped by
+    # STATE (never folded across states : the state is the group)
+    passive = {}
+    for (pin, related, ttype, lut_name, cond, axes), value in db.entries.items():
+        if ttype == POWER_TYPE and related == '-':
+            passive.setdefault(pin, {}).setdefault(cond, {}).setdefault(
+                lut_name, {})[float(axes[0])] = value
     for (pin, related, ttype, lut_name), points in db.tables(excluder).items():
         if ttype == CAP_TYPE or ttype == LEAK_TYPE:
+            continue
+        if ttype == POWER_TYPE and related == '-':
             continue
         if ttype == POWER_TYPE:
             # axes: (input slew, output load) ; energy per output edge
@@ -354,6 +371,49 @@ def build_from_measurements(cell, config, settings):
         for lut in sorted(luts, key=lambda l: l.name):
             power_group.add_group(lut)
         result.group('pin', pin).add_group(power_group)
+
+    # passive power of the input pins : one group per measured state, the
+    # vendor's shape (IHP sg13g2 : passive_POWER_7x1ds1 over the slew, a
+    # `scalar 0` for the edge the state does not carry, a last group without
+    # `when`) ; the default folds the states worst-case per slew
+    def passive_lut(lut_name, points):
+        slews = sorted(points)
+        lut = LookupTable(lut_name, f'passive_power_template_{len(slews)}',
+                          template_group='power_lut_template',
+                          input_transition_time=slews)
+        for slew, value in points.items():
+            lut[float(slew),] = to_energy(value)
+        return lut
+
+    def scalar_zero(lut_name):
+        group = liberty.Group(lut_name, 'scalar')
+        group.add_attribute('values', ['"0"'])
+        return group
+
+    for pin, conds in sorted(passive.items()):
+        pin_group = result.group('pin', pin)
+        folded = {}
+        for cond, luts in sorted(conds.items()):
+            group = liberty.Group('internal_power')
+            if cond:
+                group.add_attribute('when', when_expr(cond))
+            for lut_name in ('rise_power', 'fall_power'):
+                if lut_name in luts:
+                    group.add_group(passive_lut(lut_name, luts[lut_name]))
+                    fold = folded.setdefault(lut_name, {})
+                    for slew, value in luts[lut_name].items():
+                        fold[slew] = value if slew not in fold else max(fold[slew], value)
+                else:
+                    group.add_group(scalar_zero(lut_name))
+            pin_group.add_group(group)
+        if '' not in conds:
+            default = liberty.Group('internal_power')
+            for lut_name in ('rise_power', 'fall_power'):
+                if lut_name in folded:
+                    default.add_group(passive_lut(lut_name, folded[lut_name]))
+                else:
+                    default.add_group(scalar_zero(lut_name))
+            pin_group.add_group(default)
 
     # leakage : one group per measured state (never folded : the state IS
     # the point), the cell's value their mean
