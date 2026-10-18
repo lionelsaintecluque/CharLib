@@ -89,13 +89,14 @@ class LookupTableTemplate(liberty.Group):
     corresponding to one of the variables. Moreover, we don't care about the values in the indices
     as they are overridden by tables using these templates.
     """
-    def __init__(self, lut_name, **variables):
+    def __init__(self, lut_name, *, group_name='lu_table_template', **variables):
         """Initialize a lu_table_template group
 
         :param lut_name: The identifier for the lu_table_template group.
+        :param group_name: 'lu_table_template' (timing) or 'power_lut_template' (internal_power).
         :param **variables: keyword arguments consisting of variable names and integer sizes.
         """
-        super().__init__('lu_table_template', lut_name)
+        super().__init__(group_name, lut_name)
         index = 1
         self.variables = variables
 
@@ -137,7 +138,7 @@ class LookupTable(liberty.Group):
     arrays and matrices respectively.
     """
 
-    def __init__(self, lut_name, lut_template, **variable_values):
+    def __init__(self, lut_name, lut_template, *, template_group='lu_table_template', **variable_values):
         """Initialize a lookup table from a template
 
         :param lut_name: The name of the lookup table.
@@ -145,7 +146,7 @@ class LookupTable(liberty.Group):
         :param **variable_values: keyword arguments consisting of variable names and values.
         """
         if not isinstance(lut_template, LookupTableTemplate):
-            lut_template = LookupTableTemplate(lut_template, **{k: len(v) for k, v in variable_values.items()})
+            lut_template = LookupTableTemplate(lut_template, group_name=template_group, **{k: len(v) for k, v in variable_values.items()})
         else:
             # Validate that variable names, lengths, and positions match up with template
             for (var, values), (template_var, length) in zip(variable_values.items(), lut_template.variables.items()):

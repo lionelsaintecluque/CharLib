@@ -49,6 +49,14 @@ class TestMeasurementDB(unittest.TestCase):
         self.assertNotIn(('Q', 'CLK', 'rising_edge', 'cell_fall', '',
                           ('0.0186', '0.001')), db.entries)
 
+    def test_power_keys_parse(self):
+        # vernier branch power (18/10) : energy per output edge, leakage per state
+        db = self._load("set DB(Y:A:internal_power:rise_power:B1,0.0186,0.001) 9.4E-16\n"
+                        "set DB(Y:-:leakage_power:value:A1B1,-,-) 1.62E-10\n")
+        self.assertIn(('Y', 'A', 'internal_power', 'rise_power', 'B1', ('0.0186', '0.001')), db.entries)
+        self.assertIn(('Y', '-', 'leakage_power', 'value', 'A1B1', ('-', '-')), db.entries)
+        self.assertAlmostEqual(db.entries[('Y', '-', 'leakage_power', 'value', 'A1B1', ('-', '-'))], 1.62e-10)
+
     def test_malformed_entry_is_loud(self):
         with self.assertRaises(ValueError):
             self._load('set DB(oops) 1.0\n')

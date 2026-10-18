@@ -137,6 +137,9 @@ class Characterizer:
         lut_templates = []
         for timing_group in self.library.subgroups_with_name('timing'):
             lut_templates += [lut_group.template for lut_group in timing_group.groups.values()]
+        for power_group in self.library.subgroups_with_name('internal_power'):
+            lut_templates += [lut_group.template for lut_group in power_group.groups.values()
+                              if hasattr(lut_group, 'template')]
         [self.library.add_group(lut_template) for lut_template in lut_templates]
 
         # Plot delay surfaces (if desired)

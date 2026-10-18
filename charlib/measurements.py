@@ -45,8 +45,16 @@ comments, never inside keys; the corner lives in the file name, not in
 the keys. Cell declaration (pins, functions, area, units) stays in the
 consumer's own configuration: the DB only says what was measured.
 
-Leakage/power keys are not specified yet: specify them here first,
-before any writer emits them.
+Power keys (vernier branch power, 18/10/2026) :
+  <out>:<in>:internal_power:rise_power|fall_power[:<when>],<slew>,<load>
+      energy per OUTPUT edge in JOULES (liberty : capacitive_load_unit x
+      voltage_unit^2, pJ for pF and V), VDD x min(|Q_vdd|, |Q_vss|) minus
+      leakage, external load excluded ; folded over conditions like the
+      delays (worst case) into one internal_power group per (out, in).
+  <out>:-:leakage_power:value:<when>,-,-
+      static power of one full input state in WATTS (liberty :
+      leakage_power_unit) ; one leakage_power () { value ; when } group
+      per state, cell_leakage_power = their mean, as the vendor's.
 """
 
 import re
@@ -61,9 +69,11 @@ CONSTRAINT_TYPES = frozenset(
     for edge in ('rising', 'falling'))
 MPW_TYPE = 'min_pulse_width'
 CAP_TYPE = 'capacitance'
+POWER_TYPE = 'internal_power'
+LEAK_TYPE = 'leakage_power'
 # families that may carry the optional conditioning field (the liberty
 # `when` in embryo); constraint conditioning is the scenario's business
-CONDITIONABLE = DELAY_TYPES | {MPW_TYPE, CAP_TYPE}
+CONDITIONABLE = DELAY_TYPES | {MPW_TYPE, CAP_TYPE, POWER_TYPE, LEAK_TYPE}
 
 
 class MeasurementDB:
@@ -247,6 +257,20 @@ def build_from_measurements(cell, config, settings):
         return (si @ PySpice.Unit.u_F).convert(
             settings.units.capacitance.prefixed_unit).value
 
+    def to_volt(si):
+        return (si @ PySpice.Unit.u_V).convert(settings.units.voltage.prefixed_unit).value
+
+    def to_energy(si):
+        # the liberty's implicit energy unit : capacitive_load_unit x voltage_unit^2
+        return si * to_cap(1.0) * to_volt(1.0) ** 2
+
+    def to_power(si):
+        return (si @ PySpice.Unit.u_W).convert(settings.units.power.prefixed_unit).value
+
+    def when_expr(cond):
+        state = parse_cond(cond, [p.name for p in cell.all_pins()])
+        return '&'.join(('' if v else '!') + p for p, v in state.items())
+
     paths = config.measurements
     if isinstance(paths, str):
         paths = [paths]
@@ -262,8 +286,22 @@ def build_from_measurements(cell, config, settings):
 
     excluder = illegal_excluder(cell)
     caps = collect_caps(db, excluder)        # unfolded : the fold is cap_fold's
+    # (pin, related) -> [LookupTable] : one internal_power group each
+    power_luts = {}
     for (pin, related, ttype, lut_name), points in db.tables(excluder).items():
-        if ttype == CAP_TYPE:
+        if ttype == CAP_TYPE or ttype == LEAK_TYPE:
+            continue
+        if ttype == POWER_TYPE:
+            # axes: (input slew, output load) ; energy per output edge
+            slews = sorted({float(a[0]) for a in points})
+            loads = sorted({float(a[1]) for a in points})
+            lut = LookupTable(lut_name, f'power_template_{len(loads)}x{len(slews)}',
+                              template_group='power_lut_template',
+                              total_output_net_capacitance=loads,
+                              input_transition_time=slews)
+            for (slew, load), value in points.items():
+                lut[float(load), float(slew)] = to_energy(value)
+            power_luts.setdefault((pin, related), []).append(lut)
             continue
         if ttype in DELAY_TYPES or ttype in ASSERT_TYPES:
             if ttype in ASSERT_TYPES:
@@ -309,6 +347,27 @@ def build_from_measurements(cell, config, settings):
                 f'{config.measurements}: unsupported timing_type "{ttype}" '
                 f'on pin {pin} (leakage/power keys are not specified yet)')
         timing_luts.setdefault((pin, related, ttype), []).append(lut)
+
+    for (pin, related), luts in sorted(power_luts.items()):
+        power_group = liberty.Group('internal_power')
+        power_group.add_attribute('related_pin', related)
+        for lut in sorted(luts, key=lambda l: l.name):
+            power_group.add_group(lut)
+        result.group('pin', pin).add_group(power_group)
+
+    # leakage : one group per measured state (never folded : the state IS
+    # the point), the cell's value their mean
+    leaks = [(cond, value) for (pin, related, ttype, lut, cond, axes), value
+             in sorted(db.entries.items()) if ttype == LEAK_TYPE]
+    if leaks:
+        for cond, value in leaks:
+            leak_group = liberty.Group('leakage_power')
+            leak_group.add_attribute('value', to_power(value))
+            if cond:
+                leak_group.add_attribute('when', when_expr(cond))
+            result.add_group(leak_group)
+        result.add_attribute('cell_leakage_power',
+                             to_power(sum(v for _, v in leaks) / len(leaks)))
 
     for (pin, related, ttype), luts in sorted(timing_luts.items()):
         timing_group = liberty.Group('timing')
